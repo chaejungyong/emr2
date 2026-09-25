@@ -238,6 +238,22 @@ function renderEncounterHeader() {
     $("#encounter-summary").textContent = state.encounter.chief_complaint || "주호소가 입력되지 않았습니다.";
 }
 
+function encounterNeedsWriting(encounter) {
+    return ["chief_complaint", "history_text", "physical_exam"].some((key) => !String(encounter[key] || "").trim());
+}
+
+function syncEncounterDetails(expanded = encounterNeedsWriting(state.encounter)) {
+    const section = $("#encounter-details");
+    section.classList.toggle("expanded", expanded);
+    section.classList.toggle("collapsed", !expanded);
+    $("#encounter-details-toggle").setAttribute("aria-expanded", String(expanded));
+    const preview = [state.encounter.disease_name, state.encounter.chief_complaint]
+        .map((value) => String(value || "").replace(/\s+/g, " ").trim())
+        .filter(Boolean)
+        .join(" · ");
+    $("#encounter-details-preview").textContent = preview;
+}
+
 function populateEncounterForm() {
     if (!state.encounter) return;
     const form = $("#encounter-edit-form");
@@ -246,7 +262,12 @@ function populateEncounterForm() {
     form.elements.chief_complaint.value = state.encounter.chief_complaint || "";
     form.elements.history_text.value = state.encounter.history_text || "";
     form.elements.physical_exam.value = state.encounter.physical_exam || "";
+    syncEncounterDetails();
 }
+
+$("#encounter-details-toggle").addEventListener("click", () => {
+    syncEncounterDetails(!$("#encounter-details").classList.contains("expanded"));
+});
 
 function reflectEncounterStatus() {
     if (!state.encounter) return;
@@ -288,6 +309,7 @@ $("#encounter-edit-form").addEventListener("submit", async (event) => {
         reflectEncounterStatus();
         renderEncounters();
         renderSoap();
+        syncEncounterDetails();
         toast("진료 기본정보를 저장했습니다.");
     } catch (error) {
         handleError(error);
@@ -359,31 +381,45 @@ function evidenceHtml(items = []) {
     }).join("")}</div>`;
 }
 
+function focusStage(sections) {
+    return sections.find((section) => section.unlocked && section.status !== "confirmed")?.stage || null;
+}
+
 function renderSoap() {
     const root = $("#soap-steps");
+    const focus = focusStage(state.soap.sections);
     root.innerHTML = state.soap.sections.map((section) => {
         const stale = section.status === "stale";
         const current = section.current_text || "";
+        const preview = current.replace(/\s+/g, " ").trim();
+        const expanded = section.stage === focus;
+        const candidatesOpen = expanded && (section.status === "generated" || section.status === "stale");
+        const candidates = section.candidates.map((candidate) => `
+            <div class="candidate ${candidate.is_selected ? "selected" : ""}" data-candidate="${candidate.id}">
+                <p>${escapeHtml(candidate.content)}</p>
+                <button class="ghost choose-candidate">이 후보 사용</button>
+                ${evidenceHtml(candidate.evidence)}
+            </div>
+        `).join("");
         return `
-            <article class="soap-step ${section.unlocked ? "" : "locked"}" data-stage="${section.stage}">
-                <header class="soap-step-header">
+            <article class="soap-step ${expanded ? "expanded" : "collapsed"} ${section.unlocked ? "" : "locked"}" data-stage="${section.stage}">
+                <button type="button" class="soap-step-header" aria-expanded="${expanded}">
                     <span class="stage-letter">${section.stage}</span>
                     <strong>${stageNames[section.stage]}</strong>
+                    ${preview ? `<span class="soap-preview">${escapeHtml(preview)}</span>` : ""}
                     <span class="status ${section.status === "confirmed" ? "completed" : ""}">${escapeHtml(section.status)}</span>
-                </header>
+                    <span class="soap-chevron" aria-hidden="true"></span>
+                </button>
                 <div class="soap-step-body">
                     ${!section.unlocked ? `<p class="muted small">이전 단계를 확정하면 활성화됩니다.</p>` : ""}
                     ${stale ? `<p class="stale-note">이전 단계가 수정되어 재검토가 필요합니다.</p>` : ""}
                     <button class="secondary generate" ${section.unlocked ? "" : "disabled"}>${section.candidates.length ? "후보 다시 생성" : "Top N 후보 생성"}</button>
-                    <div class="candidates">
-                        ${section.candidates.map((candidate) => `
-                            <div class="candidate ${candidate.is_selected ? "selected" : ""}" data-candidate="${candidate.id}">
-                                <p>${escapeHtml(candidate.content)}</p>
-                                <button class="ghost choose-candidate">이 후보 사용</button>
-                                ${evidenceHtml(candidate.evidence)}
-                            </div>
-                        `).join("")}
-                    </div>
+                    ${section.candidates.length ? `
+                        <details class="candidates-fold" ${candidatesOpen ? "open" : ""}>
+                            <summary>후보 ${section.candidates.length}개</summary>
+                            <div class="candidates">${candidates}</div>
+                        </details>
+                    ` : ""}
                     <label>확정할 내용<textarea class="soap-editor" rows="6" ${section.unlocked ? "" : "disabled"}>${escapeHtml(current)}</textarea></label>
                     <button class="primary confirm" ${section.unlocked ? "" : "disabled"}>수정 내용 확정</button>
                 </div>
@@ -395,6 +431,13 @@ function renderSoap() {
 
 function bindSoapStep(step) {
     const stage = step.dataset.stage;
+    const header = $(".soap-step-header", step);
+    header.addEventListener("click", () => {
+        const expanded = !step.classList.contains("expanded");
+        step.classList.toggle("expanded", expanded);
+        step.classList.toggle("collapsed", !expanded);
+        header.setAttribute("aria-expanded", String(expanded));
+    });
     $(".generate", step).addEventListener("click", async (event) => {
         event.currentTarget.disabled = true;
         event.currentTarget.textContent = "AI 생성 중…";

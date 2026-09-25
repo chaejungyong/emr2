@@ -92,10 +92,15 @@
                             <span id="encounter-status" class="status"></span>
                         </div>
 
-                        <section class="panel encounter-details">
-                            <div class="section-title">
-                                <div><p class="eyebrow">ENCOUNTER</p><h2>진료 기본정보</h2></div>
-                            </div>
+                        <section id="encounter-details" class="panel encounter-details collapsed">
+                            <button type="button" id="encounter-details-toggle" class="encounter-details-header" aria-expanded="false">
+                                <div>
+                                    <p class="eyebrow">ENCOUNTER</p>
+                                    <h2>진료 기본정보</h2>
+                                </div>
+                                <span id="encounter-details-preview" class="soap-preview"></span>
+                                <span class="soap-chevron" aria-hidden="true"></span>
+                            </button>
                             <form id="encounter-edit-form" class="form-grid">
                                 <label>질병 카테고리<select name="disease_id" id="encounter-edit-disease"><option value="">미선택</option></select></label>
                                 <label>진료일시<input name="visit_at" type="datetime-local"></label>
