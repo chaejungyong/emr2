@@ -9,6 +9,18 @@ services:
       MYSQL_ROOT_HOST: '%'
     volumes:
       - ./db_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  qdrant:
+    image: qdrant/qdrant:v1.12.6
+    container_name: ${PROJECT_NAME}-qdrant
+    restart: always
+    volumes:
+      - ./storage/qdrant:/qdrant/storage
 
   web:
     build: .
@@ -19,6 +31,35 @@ services:
       - "${WEB_PORT}:5000"
     volumes:
       - .:/app
+      - ./storage:/app/storage
     working_dir: /app
     depends_on:
-      - db
+      db:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/api/health')"
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  worker:
+    build: .
+    container_name: ${PROJECT_NAME}-worker
+    restart: always
+    command: ["python", "worker.py"]
+    env_file: .env
+    volumes:
+      - .:/app
+      - ./storage:/app/storage
+    working_dir: /app
+    depends_on:
+      web:
+        condition: service_healthy
+      qdrant:
+        condition: service_started

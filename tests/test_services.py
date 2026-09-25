@@ -1,0 +1,180 @@
+import io
+import json
+from contextlib import nullcontext
+
+import pytest
+from flask import Flask
+from PIL import Image
+
+from app.ai import MockLLM, OpenAICompatibleLLM, QdrantStore, api_url, parse_json
+from app.auth import install_guards
+from app.clinical import detect_image
+from app.indexing import normalize_text, split_long_text
+from app.soap import stage_is_unlocked
+
+
+def test_api_url_accepts_root_or_v1_base():
+    assert api_url("https://example.test", "/v1/chat/completions") == (
+        "https://example.test/v1/chat/completions"
+    )
+    assert api_url("https://example.test/v1", "/v1/chat/completions") == (
+        "https://example.test/v1/chat/completions"
+    )
+
+
+def test_json_parser_accepts_fenced_response():
+    result = parse_json('```json\n{"candidates":[{"text":"S"}]}\n```')
+    assert result["candidates"][0]["text"] == "S"
+
+
+def test_mock_llm_returns_exact_candidate_count():
+    client = MockLLM()
+    candidates, usage = client.generate_candidates(
+        "S", {"encounter": {"chief_complaint": "기침"}}, 3
+    )
+    assert len(candidates) == 3
+    assert all("기침" in candidate for candidate in candidates)
+    assert usage["prompt_tokens"] == 0
+
+
+def test_qdrant_active_collection_uses_alias_list(monkeypatch):
+    store = QdrantStore("http://qdrant:6333", "kb_active")
+    called = {}
+
+    def fake_request(method, path, **_kwargs):
+        called.update({"method": method, "path": path})
+        return {
+            "result": {
+                "aliases": [
+                    {"alias_name": "other", "collection_name": "old"},
+                    {"alias_name": "kb_active", "collection_name": "current"},
+                ]
+            }
+        }
+
+    monkeypatch.setattr(store, "_request", fake_request)
+    assert store.active_collection() == "current"
+    assert called == {"method": "GET", "path": "/aliases"}
+
+
+def test_openai_adapter_validates_candidate_count(monkeypatch):
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        @staticmethod
+        def json():
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {"candidates": [{"text": "첫째"}, {"text": "둘째"}]}
+                            )
+                        }
+                    }
+                ],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 20},
+            }
+
+    monkeypatch.setattr("app.ai.httpx.post", lambda *args, **kwargs: Response())
+    client = OpenAICompatibleLLM("https://example.test", "key", "model", 5)
+    candidates, usage = client.generate_candidates("A", {}, 2)
+    assert candidates == ["첫째", "둘째"]
+    assert usage["completion_tokens"] == 20
+
+
+def test_chunker_is_deterministic_and_preserves_text():
+    source = ("첫 번째 문단입니다. " * 100) + "\n\n" + ("두 번째 문단입니다. " * 100)
+    normalized = normalize_text(source)
+    first = split_long_text(normalized, target=500, overlap=50)
+    second = split_long_text(normalized, target=500, overlap=50)
+    assert first == second
+    assert len(first) > 2
+    assert all(chunk.strip() for chunk in first)
+
+
+def test_image_validator_accepts_png_and_rejects_fake_file():
+    stream = io.BytesIO()
+    Image.new("RGB", (4, 4), "white").save(stream, format="PNG")
+    mime, extension = detect_image(stream.getvalue())
+    assert (mime, extension) == ("image/png", ".png")
+    with pytest.raises(ValueError):
+        detect_image(b"\x89PNG\r\n\x1a\nnot-an-image")
+
+
+def test_stage_order_requires_all_previous_sections_confirmed():
+    sections = {
+        "S": {"status": "confirmed"},
+        "O": {"status": "confirmed"},
+        "A": {"status": "pending"},
+        "P": {"status": "pending"},
+    }
+    assert stage_is_unlocked("S", sections)
+    assert stage_is_unlocked("A", sections)
+    assert not stage_is_unlocked("P", sections)
+
+
+def test_api_guard_requires_session_and_csrf():
+    app = Flask(__name__)
+    app.secret_key = "test-secret"
+
+    @app.get("/api/private")
+    def private_get():
+        return {"ok": True}
+
+    @app.post("/api/private")
+    def private_post():
+        return {"ok": True}
+
+    install_guards(app)
+    client = app.test_client()
+    assert client.get("/api/private").status_code == 401
+    with client.session_transaction() as session:
+        session["admin_id"] = "admin"
+        session["csrf_token"] = "token"
+    assert client.get("/api/private").status_code == 200
+    assert client.post("/api/private").status_code == 403
+    assert (
+        client.post("/api/private", headers={"X-CSRF-Token": "token"}).status_code
+        == 200
+    )
+
+
+def test_patient_create_endpoint_validates_and_persists(monkeypatch):
+    from app import clinical
+
+    app = Flask(__name__)
+    app.register_blueprint(clinical.bp)
+    captured = {}
+
+    def fake_execute(_sql, params=()):
+        if len(params) == 10:
+            captured.update(
+                {
+                    "id": params[0],
+                    "chart_number": params[1],
+                    "name": params[2],
+                    "species": params[3],
+                }
+            )
+
+    monkeypatch.setattr(clinical, "new_id", lambda: "patient-id")
+    monkeypatch.setattr(clinical, "execute", fake_execute)
+    monkeypatch.setattr(clinical, "fetch_one", lambda *_args, **_kwargs: captured)
+    monkeypatch.setattr(clinical, "audit", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(clinical, "transaction", nullcontext)
+
+    response = app.test_client().post(
+        "/api/patients",
+        json={
+            "chart_number": "C-001",
+            "name": "보리",
+            "species": "Canine",
+            "sex": "female",
+            "weight_kg": 7.2,
+        },
+    )
+    assert response.status_code == 201
+    assert response.get_json()["name"] == "보리"
+    assert captured["chart_number"] == "C-001"

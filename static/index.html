@@ -3,8 +3,162 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>App</title>
+    <meta name="color-scheme" content="light">
+    <title>CardioSOAP Vet</title>
+    <link rel="stylesheet" href="/static/css/app.css">
 </head>
 <body>
+    <section id="login-view" class="login-view">
+        <form id="login-form" class="login-card">
+            <div class="brand-mark">CS</div>
+            <p class="eyebrow">VETERINARY CARDIOLOGY</p>
+            <h1>CardioSOAP Vet</h1>
+            <p class="muted">심장 진료 기록을 근거와 함께 단계적으로 작성합니다.</p>
+            <label>사용자명<input name="username" autocomplete="username" required></label>
+            <label>비밀번호<input name="password" type="password" autocomplete="current-password" required></label>
+            <button type="submit" class="primary">로그인</button>
+            <p id="login-error" class="error" role="alert"></p>
+        </form>
+    </section>
+
+    <div id="app-view" class="app-view hidden">
+        <header class="topbar">
+            <div class="brand-inline"><span>CS</span><strong>CardioSOAP Vet</strong></div>
+            <div class="topbar-actions">
+                <span id="model-badge" class="badge">AI 설정 확인 중</span>
+                <span id="user-name"></span>
+                <button id="logout-button" class="ghost">로그아웃</button>
+            </div>
+        </header>
+
+        <div class="workspace">
+            <aside class="left-panel panel">
+                <div class="panel-heading">
+                    <div><p class="eyebrow">PATIENTS</p><h2>환자</h2></div>
+                    <button id="toggle-patient-form" class="icon-button" title="환자 추가">＋</button>
+                </div>
+                <input id="patient-search" class="search" placeholder="이름 또는 차트번호 검색">
+                <form id="patient-form" class="stack compact-form hidden">
+                    <input name="chart_number" placeholder="차트번호 *" required>
+                    <input name="name" placeholder="환자 이름 *" required>
+                    <div class="field-row">
+                        <input name="species" placeholder="축종 (예: Canine) *" required>
+                        <input name="breed" placeholder="품종">
+                    </div>
+                    <div class="field-row">
+                        <select name="sex"><option value="unknown">성별 미상</option><option value="male">수컷</option><option value="female">암컷</option></select>
+                        <select name="neutered"><option value="">중성화 미상</option><option value="true">중성화</option><option value="false">미중성화</option></select>
+                    </div>
+                    <div class="form-actions"><button type="button" data-cancel="patient">취소</button><button class="primary">저장</button></div>
+                </form>
+                <div id="patient-list" class="item-list"></div>
+            </aside>
+
+            <main class="main-panel">
+                <section id="empty-state" class="empty-state panel">
+                    <div class="empty-icon">♡</div>
+                    <h2>환자를 선택하세요</h2>
+                    <p>환자 정보와 진료 History를 확인하고 새 SOAP 작성을 시작할 수 있습니다.</p>
+                </section>
+
+                <div id="patient-workspace" class="hidden">
+                    <section class="patient-banner panel">
+                        <div>
+                            <p id="patient-chart" class="eyebrow"></p>
+                            <h1 id="patient-title"></h1>
+                            <p id="patient-meta" class="muted"></p>
+                        </div>
+                        <button id="new-encounter-button" class="primary">새 진료</button>
+                    </section>
+
+                    <form id="encounter-form" class="panel form-grid hidden">
+                        <div class="section-title"><h2>새 진료 기록</h2><button type="button" data-cancel="encounter" class="ghost">닫기</button></div>
+                        <label>질병 카테고리<select name="disease_id" id="encounter-disease"><option value="">미선택</option></select></label>
+                        <label>진료일시<input name="visit_at" type="datetime-local"></label>
+                        <label class="wide">주호소<textarea name="chief_complaint" rows="2"></textarea></label>
+                        <label class="wide">History<textarea name="history_text" rows="4" placeholder="증상 시작, 경과, 투약, 과거력"></textarea></label>
+                        <label class="wide">신체검사/기초 소견<textarea name="physical_exam" rows="4"></textarea></label>
+                        <div class="form-actions wide"><button class="primary">진료 생성 후 SOAP 작성</button></div>
+                    </form>
+
+                    <section class="panel">
+                        <div class="section-title"><div><p class="eyebrow">HISTORY</p><h2>진료 이력</h2></div></div>
+                        <div id="encounter-list" class="encounter-list"></div>
+                    </section>
+
+                    <section id="encounter-workspace" class="hidden">
+                        <div class="encounter-header panel">
+                            <div><p id="encounter-date" class="eyebrow"></p><h2 id="encounter-title">진료 SOAP</h2><p id="encounter-summary" class="muted"></p></div>
+                            <span id="encounter-status" class="status"></span>
+                        </div>
+
+                        <section class="panel encounter-details">
+                            <div class="section-title">
+                                <div><p class="eyebrow">ENCOUNTER</p><h2>진료 기본정보</h2></div>
+                            </div>
+                            <form id="encounter-edit-form" class="form-grid">
+                                <label>질병 카테고리<select name="disease_id" id="encounter-edit-disease"><option value="">미선택</option></select></label>
+                                <label>진료일시<input name="visit_at" type="datetime-local"></label>
+                                <label class="wide">주호소<textarea name="chief_complaint" rows="2"></textarea></label>
+                                <label class="wide">History<textarea name="history_text" rows="4"></textarea></label>
+                                <label class="wide">신체검사/기초 소견<textarea name="physical_exam" rows="4"></textarea></label>
+                                <div class="form-actions wide">
+                                    <span class="muted small">임상 내용을 수정하면 기존 SOAP는 재검토 상태가 됩니다.</span>
+                                    <button class="secondary">기본정보 저장</button>
+                                </div>
+                            </form>
+                        </section>
+
+                        <div class="clinical-grid">
+                            <section class="panel xray-panel">
+                                <div class="section-title"><div><p class="eyebrow">IMAGING</p><h2>X-ray 및 판독 소견</h2></div></div>
+                                <form id="xray-form" class="stack compact-form">
+                                    <input name="file" type="file" accept="image/jpeg,image/png" required>
+                                    <input name="body_region" placeholder="촬영 부위">
+                                    <textarea name="reading_text" rows="3" placeholder="수의사 판독 소견 — AI에는 이 텍스트만 전달됩니다."></textarea>
+                                    <button class="secondary">업로드</button>
+                                </form>
+                                <div id="xray-list" class="xray-list"></div>
+                            </section>
+
+                            <section class="panel soap-panel">
+                                <div class="section-title">
+                                    <div><p class="eyebrow">ASSISTED NOTE</p><h2>단계별 SOAP</h2></div>
+                                    <span class="review-warning">AI 초안 · 수의사 검토 필수</span>
+                                </div>
+                                <div id="soap-steps" class="soap-steps"></div>
+                            </section>
+                        </div>
+                    </section>
+                </div>
+            </main>
+
+            <aside class="right-panel panel">
+                <section>
+                    <div class="panel-heading"><div><p class="eyebrow">DISEASES</p><h2>질병 분류</h2></div></div>
+                    <form id="disease-form" class="stack compact-form">
+                        <input name="name" placeholder="질병명" required>
+                        <input name="category" value="심장질환" placeholder="카테고리">
+                        <button class="secondary">추가</button>
+                    </form>
+                    <div id="disease-list" class="tag-list"></div>
+                </section>
+                <hr>
+                <section>
+                    <div class="panel-heading"><div><p class="eyebrow">KNOWLEDGE</p><h2>의학 문서 인덱스</h2></div></div>
+                    <p class="muted small"><code>storage/knowledge/inbox</code>에 PDF를 넣은 뒤 실행하세요.</p>
+                    <div id="knowledge-summary" class="knowledge-summary"></div>
+                    <div class="field-row">
+                        <button id="incremental-index" class="secondary">증분 갱신</button>
+                        <button id="full-index" class="danger-ghost">전체 재색인</button>
+                    </div>
+                    <div id="index-jobs" class="job-list"></div>
+                </section>
+            </aside>
+        </div>
+    </div>
+
+    <div id="toast-region" class="toast-region" aria-live="polite"></div>
+    <script type="module" src="/static/js/app.js"></script>
 </body>
 </html>

@@ -3,3 +3,14 @@ db_data/
 .git/
 __pycache__/
 *.pyc
+.pytest_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+.DS_Store
+.vscode/
+.idea/
+*.log
+storage/
+tests/
