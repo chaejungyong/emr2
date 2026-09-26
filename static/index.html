@@ -102,17 +102,40 @@
                             <h1 id="patient-title"></h1>
                             <p id="patient-meta" class="muted"></p>
                         </div>
-                        <button id="new-encounter-button" class="primary">새 진료</button>
+                        <div class="form-actions">
+                            <button id="edit-patient-contact-button" type="button" class="secondary">환자 정보 수정</button>
+                            <button id="new-encounter-button" type="button" class="primary">새 진료</button>
+                        </div>
                     </section>
 
-                    <form id="encounter-form" class="panel form-grid hidden">
-                        <div class="section-title"><h2>새 진료 기록</h2><button type="button" data-cancel="encounter" class="ghost">닫기</button></div>
-                        <label>질병 카테고리<select name="disease_id" id="encounter-disease"><option value="">미선택</option></select></label>
-                        <label>진료일시<input name="visit_at" type="datetime-local"></label>
-                        <label class="wide">주호소<textarea name="chief_complaint" rows="2"></textarea></label>
-                        <label class="wide">History<textarea name="history_text" rows="4" placeholder="증상 시작, 경과, 투약, 과거력"></textarea></label>
-                        <label class="wide">신체검사/기초 소견<textarea name="physical_exam" rows="4"></textarea></label>
-                        <div class="form-actions wide"><button class="primary">진료 생성 후 SOAP 작성</button></div>
+                    <form id="patient-contact-form" class="panel form-grid hidden">
+                        <div class="section-title">
+                            <h2>환자 정보 수정</h2>
+                            <button id="cancel-patient-contact" type="button" class="ghost">닫기</button>
+                        </div>
+                        <label>보호자<input name="owner_name" class="korean-input" lang="ko" inputmode="text" autocomplete="name" autocapitalize="off" required></label>
+                        <label>핸드폰<input name="owner_phone" type="tel" inputmode="numeric" maxlength="13" pattern="010-[0-9]{4}-[0-9]{4}" placeholder="010-0000-0000" autocomplete="tel" required></label>
+                        <div class="form-actions wide"><button class="primary">수정 저장</button></div>
+                    </form>
+
+                    <form id="encounter-form" class="panel new-subjective-form hidden">
+                        <div class="new-subjective-heading">
+                            <div class="new-subjective-title">
+                                <span class="stage-letter">S</span>
+                                <div><p class="eyebrow">SUBJECTIVE</p><h2>주관적 정보</h2></div>
+                            </div>
+                            <button type="button" data-cancel="encounter" class="ghost">닫기</button>
+                        </div>
+                        <label>주호소<textarea name="chief_complaint" rows="3" placeholder="보호자가 호소하는 주요 증상을 입력하세요." required></textarea></label>
+                        <details id="new-encounter-options" class="new-encounter-options">
+                            <summary>추가 정보 · 질병 분류 및 상세 병력</summary>
+                            <div class="new-encounter-options-body">
+                                <label>질병 분류<select name="disease_id" id="encounter-disease"><option value="">미선택</option></select></label>
+                                <label>상세 병력/보호자 진술<textarea name="history_text" rows="4" placeholder="증상 시작, 경과, 투약, 과거력"></textarea></label>
+                            </div>
+                        </details>
+                        <input name="visit_at" type="hidden">
+                        <div class="form-actions"><button class="primary">S 초안 생성</button></div>
                     </form>
 
                     <section class="panel">
@@ -142,7 +165,7 @@
                                 <label class="wide">History<textarea name="history_text" rows="4"></textarea></label>
                                 <label class="wide">신체검사/기초 소견<textarea name="physical_exam" rows="4"></textarea></label>
                                 <div class="form-actions wide">
-                                    <span class="muted small">임상 내용을 수정하면 기존 SOAP는 재검토 상태가 됩니다.</span>
+                                    <span class="muted small">질병·주호소·상세 병력은 S부터, 신체검사는 O부터 재검토됩니다.</span>
                                     <button class="secondary">기본정보 저장</button>
                                 </div>
                             </form>

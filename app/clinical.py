@@ -14,10 +14,20 @@ bp = Blueprint("clinical", __name__, url_prefix="/api")
 
 ALLOWED_SEX = {"male", "female", "unknown"}
 ALLOWED_SPECIES = {"Canine", "Feline"}
+SOAP_STAGES = ("S", "O", "A", "P")
 IMAGE_SIGNATURES = {
     b"\xff\xd8\xff": ("image/jpeg", ".jpg"),
     b"\x89PNG\r\n\x1a\n": ("image/png", ".png"),
 }
+
+
+def affected_soap_stages(updated_fields):
+    fields = set(updated_fields)
+    if fields.intersection({"disease_id", "chief_complaint", "history_text"}):
+        return SOAP_STAGES
+    if "physical_exam" in fields:
+        return SOAP_STAGES[1:]
+    return ()
 
 
 def body():
@@ -358,7 +368,7 @@ def create_encounter():
             patient_id,
             disease_id,
             visit_at,
-            clean_text(payload.get("chief_complaint")),
+            clean_text(payload.get("chief_complaint"), required=True),
             clean_text(payload.get("history_text")),
             clean_text(payload.get("physical_exam")),
         )
@@ -406,7 +416,15 @@ def get_encounter(encounter_id):
 
 @bp.patch("/encounters/<encounter_id>")
 def update_encounter(encounter_id):
-    if not fetch_one("SELECT id FROM encounters WHERE id = %s", (encounter_id,)):
+    existing = fetch_one(
+        """
+        SELECT disease_id, visit_at, chief_complaint, history_text, physical_exam
+        FROM encounters
+        WHERE id = %s
+        """,
+        (encounter_id,),
+    )
+    if not existing:
         return jsonify({"error": "encounter_not_found"}), 404
     payload, error = body()
     if error:
@@ -419,36 +437,39 @@ def update_encounter(encounter_id):
         "physical_exam",
     }
     updates, params, updated_fields = [], [], []
+    supported_field_seen = False
     try:
         for key, value in payload.items():
             if key not in allowed:
                 continue
-            if key == "disease_id" and value:
-                if not fetch_one("SELECT id FROM diseases WHERE id = %s", (value,)):
+            supported_field_seen = True
+            if key == "disease_id":
+                value = value or None
+                if value and not fetch_one("SELECT id FROM diseases WHERE id = %s", (value,)):
                     return jsonify({"error": "disease_not_found"}), 404
             elif key == "visit_at":
                 value = parse_iso_datetime(value)
             elif key in {"chief_complaint", "history_text", "physical_exam"}:
                 value = clean_text(value)
+            if existing[key] == value:
+                continue
             updates.append(f"{key} = %s")
-            params.append(value or None)
+            params.append(value)
             updated_fields.append(key)
     except ValueError:
         return validation_error("진료 입력값을 확인하세요.")
-    if not updates:
+    if not supported_field_seen:
         return jsonify({"error": "no_supported_fields"}), 400
+    if not updates:
+        return get_encounter(encounter_id)
     params.append(encounter_id)
     with transaction():
         execute(f"UPDATE encounters SET {', '.join(updates)} WHERE id = %s", params)
-        context_fields = {
-            "disease_id",
-            "chief_complaint",
-            "history_text",
-            "physical_exam",
-        }
-        if context_fields.intersection(updated_fields):
+        affected_stages = affected_soap_stages(updated_fields)
+        if affected_stages:
+            placeholders = ", ".join(["%s"] * len(affected_stages))
             execute(
-                """
+                f"""
                 UPDATE soap_sections ss
                 JOIN soap_documents sd ON sd.id = ss.soap_document_id
                 SET ss.status = CASE
@@ -456,8 +477,9 @@ def update_encounter(encounter_id):
                         ELSE 'stale'
                     END
                 WHERE sd.encounter_id = %s
+                  AND ss.stage IN ({placeholders})
                 """,
-                (encounter_id,),
+                [encounter_id, *affected_stages],
             )
             execute(
                 """

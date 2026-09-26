@@ -190,6 +190,13 @@ h2 { margin-bottom: 0; font-size: 1.04rem; }
     font-variant-numeric: tabular-nums;
     letter-spacing: .04em;
 }
+.new-subjective-form { display: grid; gap: .9rem; padding: 1.15rem; margin-bottom: 1rem; border-color: #b7d5ce; }
+.new-subjective-heading, .new-subjective-title { display: flex; align-items: center; gap: .75rem; }
+.new-subjective-heading { justify-content: space-between; }
+.new-subjective-title .eyebrow { margin-bottom: .15rem; }
+.new-encounter-options { border: 1px solid var(--line); border-radius: 9px; background: #fbfcfb; }
+.new-encounter-options summary { padding: .65rem .75rem; cursor: pointer; color: var(--teal-dark); font-size: .76rem; font-weight: 750; }
+.new-encounter-options-body { display: grid; gap: .75rem; padding: 0 .75rem .75rem; }
 .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: .9rem; margin-bottom: 1rem; padding: 1.15rem; }
 .wide { grid-column: 1 / -1; }
 .encounter-details { margin-bottom: 1rem; padding: 1.1rem; }

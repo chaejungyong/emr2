@@ -64,7 +64,7 @@ class OpenAICompatibleLLM(LLMClient):
             "stage": stage,
             "candidate_count": count,
             "required_output": {
-                "candidates": [{"text": "후보 내용"} for _ in range(count)]
+                "candidates": [{"text": "초안 내용"} for _ in range(count)]
             },
             "clinical_context": context,
         }
@@ -101,7 +101,7 @@ class OpenAICompatibleLLM(LLMClient):
             if isinstance(text, str) and text.strip() and text.strip() not in candidates:
                 candidates.append(text.strip())
         if len(candidates) < count:
-            raise AIServiceError(f"AI가 요청한 {count}개 후보를 반환하지 않았습니다.")
+            raise AIServiceError(f"AI가 요청한 {count}개 초안을 반환하지 않았습니다.")
         return candidates[:count], result.get("usage", {})
 
 
@@ -113,7 +113,7 @@ class MockLLM(LLMClient):
         complaint = context.get("encounter", {}).get("chief_complaint") or "기록된 주호소 없음"
         return (
             [
-                f"[{stage} 후보 {index + 1}] {complaint} — 수의사 검토 후 수정하세요."
+                f"[{stage} AI 초안 {index + 1}] {complaint} — 수의사 검토 후 수정하세요."
                 for index in range(count)
             ],
             {"prompt_tokens": 0, "completion_tokens": 0},

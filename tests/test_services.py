@@ -8,7 +8,7 @@ from PIL import Image
 
 from app.ai import MockLLM, OpenAICompatibleLLM, QdrantStore, api_url, parse_json
 from app.auth import install_guards
-from app.clinical import detect_image
+from app.clinical import affected_soap_stages, detect_image
 from app.indexing import normalize_text, split_long_text
 from app.soap import stage_is_unlocked
 
@@ -101,6 +101,18 @@ def test_image_validator_accepts_png_and_rejects_fake_file():
     assert (mime, extension) == ("image/png", ".png")
     with pytest.raises(ValueError):
         detect_image(b"\x89PNG\r\n\x1a\nnot-an-image")
+
+
+def test_encounter_fields_stale_only_dependent_soap_stages():
+    assert affected_soap_stages({"physical_exam"}) == ("O", "A", "P")
+    assert affected_soap_stages({"chief_complaint"}) == ("S", "O", "A", "P")
+    assert affected_soap_stages({"history_text", "physical_exam"}) == (
+        "S",
+        "O",
+        "A",
+        "P",
+    )
+    assert affected_soap_stages({"visit_at"}) == ()
 
 
 def test_stage_order_requires_all_previous_sections_confirmed():
@@ -248,6 +260,26 @@ def test_patient_create_endpoint_rejects_unsupported_species():
     assert response.get_json()["error"] == "validation_error"
 
 
+def test_encounter_create_requires_chief_complaint(monkeypatch):
+    from app import clinical
+
+    app = Flask(__name__)
+    app.register_blueprint(clinical.bp)
+    monkeypatch.setattr(
+        clinical,
+        "fetch_one",
+        lambda *_args, **_kwargs: {"id": "patient-id"},
+    )
+
+    response = app.test_client().post(
+        "/api/encounters",
+        json={"patient_id": "patient-id"},
+    )
+
+    assert response.status_code == 400
+    assert response.get_json()["error"] == "validation_error"
+
+
 def test_next_patient_chart_number_endpoint_returns_preview(monkeypatch):
     from app import clinical
 
@@ -263,6 +295,40 @@ def test_next_patient_chart_number_endpoint_returns_preview(monkeypatch):
 
     assert response.status_code == 200
     assert response.get_json()["chart_number"] == "C-000042"
+
+
+def test_patient_owner_contact_can_be_updated(monkeypatch):
+    from app import clinical
+
+    app = Flask(__name__)
+    app.register_blueprint(clinical.bp)
+    patient = {
+        "id": "patient-id",
+        "owner_name": "이전 보호자",
+        "owner_phone": "010-1111-2222",
+    }
+
+    def fake_execute(sql, params=()):
+        if sql.startswith("UPDATE patients SET"):
+            patient["owner_name"] = params[0]
+            patient["owner_phone"] = params[1]
+
+    monkeypatch.setattr(clinical, "fetch_one", lambda *_args, **_kwargs: patient)
+    monkeypatch.setattr(clinical, "execute", fake_execute)
+    monkeypatch.setattr(clinical, "audit", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(clinical, "transaction", nullcontext)
+
+    response = app.test_client().patch(
+        "/api/patients/patient-id",
+        json={
+            "owner_name": "새 보호자",
+            "owner_phone": "010-3333-4444",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.get_json()["owner_name"] == "새 보호자"
+    assert response.get_json()["owner_phone"] == "010-3333-4444"
 
 
 def test_patient_chart_number_cannot_be_updated(monkeypatch):

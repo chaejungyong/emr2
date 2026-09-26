@@ -268,16 +268,50 @@ $("#toggle-patient-form").addEventListener("click", async () => {
 });
 $('[data-cancel="patient"]').addEventListener("click", () => $("#patient-form").classList.add("hidden"));
 
+function installOwnerPhoneFormatting(input) {
+    input.addEventListener("focus", () => {
+        if (!input.value) input.value = "010-";
+    });
+    input.addEventListener("input", () => {
+        input.value = formatOwnerPhoneInput(input.value);
+        input.setSelectionRange(input.value.length, input.value.length);
+    });
+    input.addEventListener("blur", () => {
+        if (input.value === "010-") input.value = "";
+    });
+}
+
 const ownerPhoneInput = $('#patient-form [name="owner_phone"]');
-ownerPhoneInput.addEventListener("focus", () => {
-    if (!ownerPhoneInput.value) ownerPhoneInput.value = "010-";
+const patientContactPhoneInput = $('#patient-contact-form [name="owner_phone"]');
+installOwnerPhoneFormatting(ownerPhoneInput);
+installOwnerPhoneFormatting(patientContactPhoneInput);
+
+$("#edit-patient-contact-button").addEventListener("click", () => {
+    if (!state.patient) return;
+    const form = $("#patient-contact-form");
+    form.elements.owner_name.value = state.patient.owner_name || "";
+    form.elements.owner_phone.value = state.patient.owner_phone || "";
+    form.classList.remove("hidden");
+    form.elements.owner_name.focus();
 });
-ownerPhoneInput.addEventListener("input", () => {
-    ownerPhoneInput.value = formatOwnerPhoneInput(ownerPhoneInput.value);
-    ownerPhoneInput.setSelectionRange(ownerPhoneInput.value.length, ownerPhoneInput.value.length);
+$("#cancel-patient-contact").addEventListener("click", () => {
+    $("#patient-contact-form").classList.add("hidden");
 });
-ownerPhoneInput.addEventListener("blur", () => {
-    if (ownerPhoneInput.value === "010-") ownerPhoneInput.value = "";
+$("#patient-contact-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const patientId = state.patient?.id;
+    if (!patientId) return;
+    try {
+        await api(`/api/patients/${patientId}`, {
+            method: "PATCH",
+            body: formObject(form),
+        });
+        form.classList.add("hidden");
+        await loadPatients();
+        await selectPatient(patientId);
+        toast("보호자 정보를 수정했습니다.");
+    } catch (error) { handleError(error); }
 });
 
 const birthDateDisplay = $("#patient-birth-date-display");
@@ -453,6 +487,10 @@ async function selectPatient(patientId) {
     state.soap = null;
     $("#empty-state").classList.add("hidden");
     $("#patient-workspace").classList.remove("hidden");
+    const encounterForm = $("#encounter-form");
+    encounterForm.reset();
+    encounterForm.classList.add("hidden");
+    $("#patient-contact-form").classList.add("hidden");
     $("#encounter-workspace").classList.add("hidden");
     $("#patient-chart").textContent = `차트번호 ${state.patient.chart_number}`;
     $("#patient-title").textContent = state.patient.name;
@@ -482,26 +520,53 @@ function renderEncounters() {
 }
 
 $("#new-encounter-button").addEventListener("click", () => {
+    const form = $("#encounter-form");
+    form.reset();
     const input = $('#encounter-form [name="visit_at"]');
     const now = new Date(Date.now() - new Date().getTimezoneOffset() * 60000);
     input.value = now.toISOString().slice(0, 16);
-    $("#encounter-form").classList.remove("hidden");
+    $("#new-encounter-options").open = false;
+    $("#patient-contact-form").classList.add("hidden");
+    $("#encounter-workspace").classList.add("hidden");
+    form.classList.remove("hidden");
+    form.scrollIntoView({behavior: "smooth", block: "center"});
+    requestAnimationFrame(() => form.elements.chief_complaint.focus());
 });
-$('[data-cancel="encounter"]').addEventListener("click", () => $("#encounter-form").classList.add("hidden"));
+$('[data-cancel="encounter"]').addEventListener("click", () => {
+    const form = $("#encounter-form");
+    form.reset();
+    form.classList.add("hidden");
+    if (state.encounter) $("#encounter-workspace").classList.remove("hidden");
+});
 
 $("#encounter-form").addEventListener("submit", async (event) => {
     event.preventDefault();
     const form = event.currentTarget;
+    const button = $("button.primary", form);
     const payload = formObject(form);
-    payload.patient_id = state.patient.id;
+    const patientId = state.patient.id;
+    payload.patient_id = patientId;
+    button.disabled = true;
+    button.textContent = "진료 생성 중…";
     try {
         const encounter = await api("/api/encounters", {method: "POST", body: payload});
         form.reset();
         form.classList.add("hidden");
-        await selectPatient(state.patient.id);
+        await selectPatient(patientId);
         await openEncounter(encounter.id);
         toast("새 진료를 생성했습니다.");
-    } catch (error) { handleError(error); }
+        try {
+            await generateSoapStage("S");
+        } catch (error) {
+            handleError(error);
+            renderSoap();
+        }
+    } catch (error) {
+        handleError(error);
+    } finally {
+        button.disabled = false;
+        button.textContent = "S 초안 생성";
+    }
 });
 
 async function openEncounter(encounterId) {
@@ -530,7 +595,7 @@ function renderEncounterHeader() {
 }
 
 function encounterNeedsWriting(encounter) {
-    return ["chief_complaint", "history_text", "physical_exam"].some((key) => !String(encounter[key] || "").trim());
+    return !String(encounter?.chief_complaint || "").trim();
 }
 
 function syncEncounterDetails(expanded = encounterNeedsWriting(state.encounter)) {
@@ -662,7 +727,7 @@ function renderXrays() {
     }));
 }
 
-const stageNames = {S: "Subjective", O: "Objective", A: "Assessment", P: "Plan"};
+const stageNames = {S: "주관적 정보", O: "객관적 정보", A: "평가", P: "계획"};
 
 function evidenceHtml(items = []) {
     if (!items.length) return "";
@@ -674,6 +739,20 @@ function evidenceHtml(items = []) {
 
 function focusStage(sections) {
     return sections.find((section) => section.unlocked && section.status !== "confirmed")?.stage || null;
+}
+
+async function generateSoapStage(stage) {
+    const step = $(`.soap-step[data-stage="${stage}"]`);
+    const button = step ? $(".generate", step) : null;
+    if (button) button.disabled = true;
+    if (button) button.textContent = "AI 생성 중…";
+    await api(`/api/encounters/${state.encounter.id}/soap/${stage}/candidates`, {method: "POST"});
+    state.soap = await api(`/api/encounters/${state.encounter.id}/soap`);
+    state.encounter = await api(`/api/encounters/${state.encounter.id}`);
+    reflectEncounterStatus();
+    renderEncounters();
+    renderSoap();
+    toast(`${stage} AI 초안을 작성했습니다.`);
 }
 
 function renderSoap() {
@@ -688,7 +767,7 @@ function renderSoap() {
         const candidates = section.candidates.map((candidate) => `
             <div class="candidate ${candidate.is_selected ? "selected" : ""}" data-candidate="${candidate.id}">
                 <p>${escapeHtml(candidate.content)}</p>
-                <button class="ghost choose-candidate">이 후보 사용</button>
+                <button class="ghost choose-candidate">이 초안 선택</button>
                 ${evidenceHtml(candidate.evidence)}
             </div>
         `).join("");
@@ -704,10 +783,15 @@ function renderSoap() {
                 <div class="soap-step-body">
                     ${!section.unlocked ? `<p class="muted small">이전 단계를 확정하면 활성화됩니다.</p>` : ""}
                     ${stale ? `<p class="stale-note">이전 단계가 수정되어 재검토가 필요합니다.</p>` : ""}
-                    <button class="secondary generate" ${section.unlocked ? "" : "disabled"}>${section.candidates.length ? "후보 다시 생성" : "후보 생성"}</button>
+                    ${section.stage === "O" && section.unlocked ? `
+                        <label>신체검사/기초 소견
+                            <textarea class="objective-source" rows="4" placeholder="청진, 호흡수, 심박수, 활력징후 등">${escapeHtml(state.encounter?.physical_exam || "")}</textarea>
+                        </label>
+                    ` : ""}
+                    <button class="secondary generate" ${section.unlocked ? "" : "disabled"}>${section.candidates.length ? "AI 초안 다시 작성" : `${section.stage} 초안 작성`}</button>
                     ${section.candidates.length ? `
                         <details class="candidates-fold" ${candidatesOpen ? "open" : ""}>
-                            <summary>후보 ${section.candidates.length}개</summary>
+                            <summary>AI 작성 초안 ${section.candidates.length}개</summary>
                             <div class="candidates">${candidates}</div>
                         </details>
                     ` : ""}
@@ -730,16 +814,29 @@ function bindSoapStep(step) {
         header.setAttribute("aria-expanded", String(expanded));
     });
     $(".generate", step).addEventListener("click", async (event) => {
-        event.currentTarget.disabled = true;
-        event.currentTarget.textContent = "AI 생성 중…";
+        const button = event.currentTarget;
+        button.disabled = true;
+        button.textContent = "AI 생성 중…";
         try {
-            await api(`/api/encounters/${state.encounter.id}/soap/${stage}/candidates`, {method: "POST"});
-            state.soap = await api(`/api/encounters/${state.encounter.id}/soap`);
-            state.encounter = await api(`/api/encounters/${state.encounter.id}`);
-            reflectEncounterStatus();
-            renderEncounters();
-            renderSoap();
-            toast(`${stage} 후보를 생성했습니다.`);
+            if (stage === "O") {
+                const physicalExam = $(".objective-source", step).value.trim();
+                if (!physicalExam) {
+                    toast("신체검사/기초 소견을 입력하세요.", "error");
+                    button.disabled = false;
+                    button.textContent = "O 초안 생성";
+                    return;
+                }
+                if (physicalExam !== String(state.encounter.physical_exam || "").trim()) {
+                    state.encounter = await api(`/api/encounters/${state.encounter.id}`, {
+                        method: "PATCH",
+                        body: {physical_exam: physicalExam},
+                    });
+                    state.soap = await api(`/api/encounters/${state.encounter.id}/soap`);
+                    reflectEncounterStatus();
+                    renderEncounters();
+                }
+            }
+            await generateSoapStage(stage);
         } catch (error) { handleError(error); renderSoap(); }
     });
     $$(".choose-candidate", step).forEach((button) => button.addEventListener("click", () => {
