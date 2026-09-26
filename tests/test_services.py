@@ -30,9 +30,9 @@ def test_json_parser_accepts_fenced_response():
 def test_mock_llm_returns_exact_candidate_count():
     client = MockLLM()
     candidates, usage = client.generate_candidates(
-        "S", {"encounter": {"chief_complaint": "기침"}}, 3
+        "S", {"encounter": {"chief_complaint": "기침"}}, 1
     )
-    assert len(candidates) == 3
+    assert len(candidates) == 1
     assert all("기침" in candidate for candidate in candidates)
     assert usage["prompt_tokens"] == 0
 

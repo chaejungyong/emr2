@@ -44,7 +44,7 @@ class Config:
     LLM_API_KEY = os.environ.get("LLM_API_KEY", "")
     LLM_MODEL = os.environ.get("LLM_MODEL", "gpt-4o-mini")
     LLM_TIMEOUT_SECONDS = float(os.environ.get("LLM_TIMEOUT_SECONDS", "90"))
-    SOAP_CANDIDATE_COUNT = int(os.environ.get("SOAP_CANDIDATE_COUNT", "3"))
+    SOAP_CANDIDATE_COUNT = int(os.environ.get("SOAP_CANDIDATE_COUNT", "1"))
 
     EMBEDDING_BASE_URL = os.environ.get("EMBEDDING_BASE_URL", LLM_BASE_URL)
     EMBEDDING_API_KEY = os.environ.get("EMBEDDING_API_KEY", LLM_API_KEY)

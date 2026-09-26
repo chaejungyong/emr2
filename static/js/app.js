@@ -413,7 +413,7 @@ function renderSoap() {
                 <div class="soap-step-body">
                     ${!section.unlocked ? `<p class="muted small">이전 단계를 확정하면 활성화됩니다.</p>` : ""}
                     ${stale ? `<p class="stale-note">이전 단계가 수정되어 재검토가 필요합니다.</p>` : ""}
-                    <button class="secondary generate" ${section.unlocked ? "" : "disabled"}>${section.candidates.length ? "후보 다시 생성" : "Top N 후보 생성"}</button>
+                    <button class="secondary generate" ${section.unlocked ? "" : "disabled"}>${section.candidates.length ? "후보 다시 생성" : "후보 생성"}</button>
                     ${section.candidates.length ? `
                         <details class="candidates-fold" ${candidatesOpen ? "open" : ""}>
                             <summary>후보 ${section.candidates.length}개</summary>
