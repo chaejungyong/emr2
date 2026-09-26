@@ -40,15 +40,49 @@
                 <input id="patient-search" class="search" placeholder="이름 또는 차트번호 검색">
                 <form id="patient-form" class="stack compact-form hidden">
                     <p id="new-patient-chart" class="patient-chart-label" aria-live="polite">차트번호 확인 중…</p>
-                    <input name="name" placeholder="환자 이름 *" required>
+                    <input name="name" class="korean-input" lang="ko" inputmode="text" autocomplete="off" autocapitalize="off" placeholder="환자 이름 *" required>
                     <div class="field-row">
-                        <input name="species" placeholder="축종 (예: Canine) *" required>
-                        <input name="breed" placeholder="품종">
+                        <label>종
+                            <select name="species" required>
+                                <option value="">선택</option>
+                                <option value="Canine">개</option>
+                                <option value="Feline">고양이</option>
+                            </select>
+                        </label>
+                        <label>품종<input name="breed" placeholder="품종"></label>
                     </div>
-                    <div class="field-row">
-                        <select name="sex"><option value="unknown">성별 미상</option><option value="male">수컷</option><option value="female">암컷</option></select>
-                        <select name="neutered"><option value="">중성화 미상</option><option value="true">중성화</option><option value="false">미중성화</option></select>
+                    <label>성별
+                        <select name="sex_status" required>
+                            <option value="">성별</option>
+                            <option value="male:false">수컷</option>
+                            <option value="male:true">수컷중성화</option>
+                            <option value="female:false">암컷</option>
+                            <option value="female:true">암컷중성화</option>
+                        </select>
+                    </label>
+                    <div class="birth-date-field">
+                        <label for="patient-birth-date-display">생년월일</label>
+                        <div class="birth-date-control">
+                            <input id="patient-birth-date-display" type="text" inputmode="text" autocomplete="off" placeholder="년/월/일 또는 1y · 1m · 25d" aria-controls="patient-birth-calendar" aria-expanded="false">
+                            <input id="patient-birth-date" name="birth_date" type="hidden">
+                            <button id="birth-calendar-toggle" class="birth-calendar-toggle" type="button" aria-label="생년월일 달력 열기">▾</button>
+                        </div>
+                        <div id="patient-birth-calendar" class="birth-calendar hidden" role="dialog" aria-label="생년월일 달력">
+                            <p class="birth-calendar-help">나이로 입력: 1y(1살) · 1m(1개월) · 25d(25일)</p>
+                            <div class="birth-calendar-header">
+                                <button id="birth-calendar-prev" type="button" class="calendar-nav" aria-label="이전 달">‹</button>
+                                <strong id="birth-calendar-title"></strong>
+                                <button id="birth-calendar-next" type="button" class="calendar-nav" aria-label="다음 달">›</button>
+                            </div>
+                            <div class="birth-calendar-weekdays" aria-hidden="true">
+                                <span>일</span><span>월</span><span>화</span><span>수</span><span>목</span><span>금</span><span>토</span>
+                            </div>
+                            <div id="birth-calendar-days" class="birth-calendar-days"></div>
+                            <button id="birth-calendar-today" type="button" class="birth-calendar-today"></button>
+                        </div>
                     </div>
+                    <label>보호자<input name="owner_name" class="korean-input" lang="ko" inputmode="text" autocomplete="name" autocapitalize="off" placeholder="보호자 이름" required></label>
+                    <label>핸드폰<input name="owner_phone" type="tel" inputmode="numeric" maxlength="13" pattern="010-[0-9]{4}-[0-9]{4}" placeholder="010-0000-0000" autocomplete="tel" required></label>
                     <div class="form-actions"><button type="button" data-cancel="patient">취소</button><button class="primary">저장</button></div>
                 </form>
                 <div id="patient-list" class="item-list"></div>

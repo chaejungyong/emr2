@@ -32,6 +32,7 @@ input, select, textarea {
 input:focus, select:focus, textarea:focus { border-color: var(--teal); box-shadow: 0 0 0 3px rgba(23,107,98,.11); }
 textarea { resize: vertical; line-height: 1.55; }
 label { display: grid; gap: .35rem; color: var(--muted); font-size: .82rem; font-weight: 650; }
+.korean-input { ime-mode: active; }
 hr { border: 0; border-top: 1px solid var(--line); margin: 1.5rem 0; }
 code { font-size: .78rem; overflow-wrap: anywhere; }
 .hidden { display: none !important; }
@@ -78,6 +79,78 @@ h2 { margin-bottom: 0; font-size: 1.04rem; }
 .compact-form { margin-bottom: 1rem; padding: .85rem; border-radius: 10px; background: #f7faf8; }
 .field-row { display: grid; grid-template-columns: 1fr 1fr; gap: .55rem; }
 .form-actions { display: flex; justify-content: flex-end; gap: .5rem; }
+
+.birth-date-field { position: relative; display: grid; gap: .35rem; }
+.birth-date-control { position: relative; }
+.birth-date-control input { padding-right: 2.5rem; }
+.birth-calendar-toggle {
+    position: absolute;
+    top: 1px;
+    right: 1px;
+    width: 2.35rem;
+    height: calc(100% - 2px);
+    padding: 0;
+    border: 0;
+    border-left: 1px solid var(--line);
+    border-radius: 0 8px 8px 0;
+    color: var(--teal-dark);
+    background: #f7faf8;
+    font-size: 1rem;
+}
+.birth-calendar {
+    position: absolute;
+    top: calc(100% + .35rem);
+    left: 0;
+    z-index: 15;
+    width: 100%;
+    padding: .7rem;
+    border: 1px solid #bfd5cf;
+    border-radius: 10px;
+    background: #fff;
+    box-shadow: 0 14px 30px rgba(24, 52, 47, .16);
+}
+.birth-calendar-help { margin: 0 0 .55rem; color: var(--muted); font-size: .65rem; line-height: 1.4; }
+.birth-calendar-header { display: grid; grid-template-columns: 28px 1fr 28px; align-items: center; gap: .35rem; margin-bottom: .55rem; text-align: center; }
+.birth-calendar-header strong { font-size: .86rem; }
+.calendar-nav {
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    border: 1px solid var(--line);
+    border-radius: 7px;
+    color: var(--teal-dark);
+    background: #f7faf8;
+    font-size: 1rem;
+}
+.birth-calendar-weekdays, .birth-calendar-days { display: grid; grid-template-columns: repeat(7, 1fr); gap: .16rem; }
+.birth-calendar-weekdays { margin-bottom: .22rem; color: var(--muted); font-size: .64rem; font-weight: 750; text-align: center; }
+.calendar-day {
+    aspect-ratio: 1;
+    min-width: 0;
+    padding: 0;
+    border: 0;
+    border-radius: 7px;
+    color: var(--ink);
+    background: transparent;
+    font-size: .7rem;
+}
+.calendar-day:hover { background: var(--teal-soft); }
+.calendar-day.other-month { color: #a8b4b1; }
+.calendar-day.sunday { color: var(--danger); }
+.calendar-day.saturday { color: var(--teal); }
+.calendar-day.today { box-shadow: inset 0 0 0 1px var(--teal); }
+.calendar-day.selected { color: #fff; background: var(--teal); box-shadow: none; font-weight: 850; }
+.birth-calendar-today {
+    width: 100%;
+    margin-top: .5rem;
+    padding: .42rem .5rem;
+    border: 0;
+    border-radius: 7px;
+    color: var(--teal-dark);
+    background: var(--teal-soft);
+    font-size: .68rem;
+    font-weight: 750;
+}
 
 .item-list { display: grid; gap: .45rem; }
 .patient-item { padding: .8rem; border: 1px solid transparent; border-radius: 10px; cursor: pointer; transition: .15s ease; }

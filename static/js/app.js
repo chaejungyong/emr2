@@ -22,6 +22,113 @@ function escapeHtml(value) {
         .replaceAll("'", "&#039;");
 }
 
+function speciesLabel(value) {
+    return {Canine: "개", Feline: "고양이"}[value] || value || "종 미상";
+}
+
+function sexLabel(sex, neutered) {
+    if (sex === "male") return neutered ? "수컷중성화" : "수컷";
+    if (sex === "female") return neutered ? "암컷중성화" : "암컷";
+    return "성별";
+}
+
+function formatOwnerPhoneInput(value) {
+    const digits = String(value || "").replace(/\D/g, "");
+    const subscriber = (digits.startsWith("010") ? digits.slice(3) : digits).slice(0, 8);
+    if (!subscriber) return "010-";
+    if (subscriber.length <= 4) return `010-${subscriber}`;
+    return `010-${subscriber.slice(0, 4)}-${subscriber.slice(4)}`;
+}
+
+function padDatePart(value) {
+    return String(value).padStart(2, "0");
+}
+
+function dateToISO(date) {
+    return `${date.getFullYear()}-${padDatePart(date.getMonth() + 1)}-${padDatePart(date.getDate())}`;
+}
+
+function dateToKoreanInput(date) {
+    return `${date.getFullYear()}/${padDatePart(date.getMonth() + 1)}/${padDatePart(date.getDate())}`;
+}
+
+function validLocalDate(year, month, day) {
+    const date = new Date(year, month - 1, day);
+    return date.getFullYear() === year && date.getMonth() === month - 1 && date.getDate() === day
+        ? date
+        : null;
+}
+
+function subtractAgeFromToday(amount, unit) {
+    const today = new Date();
+    if (unit === "d") {
+        const date = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+        date.setDate(date.getDate() - amount);
+        return date;
+    }
+
+    let year = today.getFullYear();
+    let month = today.getMonth();
+    if (unit === "y") year -= amount;
+    if (unit === "m") {
+        const totalMonths = year * 12 + month - amount;
+        year = Math.floor(totalMonths / 12);
+        month = totalMonths % 12;
+    }
+    const lastDay = new Date(year, month + 1, 0).getDate();
+    return new Date(year, month, Math.min(today.getDate(), lastDay));
+}
+
+function parseBirthDateText(value) {
+    const text = String(value || "").trim().toLowerCase();
+    const ageMatch = text.match(/^(\d+)([ymd])$/);
+    if (ageMatch) {
+        const amount = Number(ageMatch[1]);
+        if (amount <= 36500) return subtractAgeFromToday(amount, ageMatch[2]);
+        return null;
+    }
+
+    const dateMatch = text.match(/^(\d{4})[\/.\-](\d{1,2})[\/.\-](\d{1,2})$/);
+    if (!dateMatch) return null;
+    return validLocalDate(Number(dateMatch[1]), Number(dateMatch[2]), Number(dateMatch[3]));
+}
+
+function dateFromISO(value) {
+    if (!value) return null;
+    const parts = value.split("-").map(Number);
+    return parts.length === 3 ? validLocalDate(parts[0], parts[1], parts[2]) : null;
+}
+
+function formatPatientAge(value) {
+    const birthDate = dateFromISO(value);
+    if (!birthDate) return null;
+
+    const today = new Date();
+    const todayDate = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+    if (birthDate > todayDate) return null;
+
+    let totalMonths = (
+        (todayDate.getFullYear() - birthDate.getFullYear()) * 12
+        + todayDate.getMonth()
+        - birthDate.getMonth()
+    );
+    const anniversaryYear = birthDate.getFullYear() + Math.floor(
+        (birthDate.getMonth() + totalMonths) / 12
+    );
+    const anniversaryMonth = (birthDate.getMonth() + totalMonths) % 12;
+    const anniversaryDay = Math.min(
+        birthDate.getDate(),
+        new Date(anniversaryYear, anniversaryMonth + 1, 0).getDate(),
+    );
+    if (new Date(anniversaryYear, anniversaryMonth, anniversaryDay) > todayDate) {
+        totalMonths -= 1;
+    }
+    if (totalMonths < 0) return null;
+    const years = Math.floor(totalMonths / 12);
+    const months = totalMonths % 12;
+    return months ? `나이: ${years}년 ${months}개월` : `나이: ${years}년`;
+}
+
 function formatDate(value, withTime = false) {
     if (!value) return "날짜 미상";
     const date = new Date(value);
@@ -130,7 +237,7 @@ function renderPatients() {
         <div class="patient-item ${state.patient?.id === patient.id ? "active" : ""}" data-patient="${patient.id}">
             <span class="patient-list-chart">차트번호 ${escapeHtml(patient.chart_number)}</span>
             <strong>${escapeHtml(patient.name)}</strong>
-            <span>${escapeHtml(patient.species)} · 진료 ${patient.encounter_count}회</span>
+            <span>${escapeHtml(speciesLabel(patient.species))} · 진료 ${patient.encounter_count}회</span>
         </div>
     `).join("") : `<p class="muted small">등록된 환자가 없습니다.</p>`;
     $$("[data-patient]", root).forEach((node) => node.addEventListener("click", () => selectPatient(node.dataset.patient)));
@@ -161,11 +268,175 @@ $("#toggle-patient-form").addEventListener("click", async () => {
 });
 $('[data-cancel="patient"]').addEventListener("click", () => $("#patient-form").classList.add("hidden"));
 
+const ownerPhoneInput = $('#patient-form [name="owner_phone"]');
+ownerPhoneInput.addEventListener("focus", () => {
+    if (!ownerPhoneInput.value) ownerPhoneInput.value = "010-";
+});
+ownerPhoneInput.addEventListener("input", () => {
+    ownerPhoneInput.value = formatOwnerPhoneInput(ownerPhoneInput.value);
+    ownerPhoneInput.setSelectionRange(ownerPhoneInput.value.length, ownerPhoneInput.value.length);
+});
+ownerPhoneInput.addEventListener("blur", () => {
+    if (ownerPhoneInput.value === "010-") ownerPhoneInput.value = "";
+});
+
+const birthDateDisplay = $("#patient-birth-date-display");
+const birthDateValue = $("#patient-birth-date");
+const birthCalendar = $("#patient-birth-calendar");
+const birthCalendarDays = $("#birth-calendar-days");
+let birthCalendarCursor = new Date(new Date().getFullYear(), new Date().getMonth(), 1);
+
+function renderBirthCalendar() {
+    const year = birthCalendarCursor.getFullYear();
+    const month = birthCalendarCursor.getMonth();
+    const today = new Date();
+    const todayISO = dateToISO(today);
+    const selectedISO = birthDateValue.value;
+    $("#birth-calendar-title").textContent = `${year}년 ${month + 1}월`;
+    $("#birth-calendar-today").textContent = `오늘: ${today.getFullYear()}년 ${today.getMonth() + 1}월 ${today.getDate()}일`;
+
+    const firstWeekday = new Date(year, month, 1).getDay();
+    const firstVisibleDate = new Date(year, month, 1 - firstWeekday);
+    birthCalendarDays.innerHTML = "";
+    for (let index = 0; index < 42; index += 1) {
+        const date = new Date(
+            firstVisibleDate.getFullYear(),
+            firstVisibleDate.getMonth(),
+            firstVisibleDate.getDate() + index,
+        );
+        const iso = dateToISO(date);
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "calendar-day";
+        button.dataset.date = iso;
+        button.textContent = date.getDate();
+        if (date.getMonth() !== month) button.classList.add("other-month");
+        if (date.getDay() === 0) button.classList.add("sunday");
+        if (date.getDay() === 6) button.classList.add("saturday");
+        if (iso === todayISO) button.classList.add("today");
+        if (iso === selectedISO) button.classList.add("selected");
+        birthCalendarDays.append(button);
+    }
+}
+
+function openBirthCalendar() {
+    const selected = dateFromISO(birthDateValue.value);
+    const base = selected || new Date();
+    birthCalendarCursor = new Date(base.getFullYear(), base.getMonth(), 1);
+    renderBirthCalendar();
+    birthCalendar.classList.remove("hidden");
+    birthDateDisplay.setAttribute("aria-expanded", "true");
+}
+
+function closeBirthCalendar() {
+    birthCalendar.classList.add("hidden");
+    birthDateDisplay.setAttribute("aria-expanded", "false");
+}
+
+function setBirthDate(date, close = false) {
+    birthDateValue.value = dateToISO(date);
+    birthDateDisplay.value = dateToKoreanInput(date);
+    birthDateDisplay.setCustomValidity("");
+    birthCalendarCursor = new Date(date.getFullYear(), date.getMonth(), 1);
+    renderBirthCalendar();
+    if (close) closeBirthCalendar();
+}
+
+function commitBirthDate() {
+    const text = birthDateDisplay.value.trim();
+    if (!text) {
+        birthDateValue.value = "";
+        birthDateDisplay.setCustomValidity("");
+        return true;
+    }
+    const date = parseBirthDateText(text);
+    if (!date) {
+        birthDateDisplay.setCustomValidity("생년월일은 년/월/일 또는 1y, 1m, 25d 형식으로 입력하세요.");
+        birthDateDisplay.reportValidity();
+        return false;
+    }
+    setBirthDate(date);
+    return true;
+}
+
+birthDateDisplay.addEventListener("focus", openBirthCalendar);
+birthDateDisplay.addEventListener("input", () => {
+    birthDateDisplay.setCustomValidity("");
+    birthDateValue.value = "";
+    const date = parseBirthDateText(birthDateDisplay.value);
+    if (date) {
+        birthDateValue.value = dateToISO(date);
+        birthCalendarCursor = new Date(date.getFullYear(), date.getMonth(), 1);
+        renderBirthCalendar();
+    }
+});
+birthDateDisplay.addEventListener("blur", () => {
+    commitBirthDate();
+    closeBirthCalendar();
+});
+birthDateDisplay.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+        event.preventDefault();
+        if (commitBirthDate()) {
+            closeBirthCalendar();
+            birthDateDisplay.blur();
+        }
+    } else if (event.key === "Escape") {
+        closeBirthCalendar();
+        birthDateDisplay.blur();
+    }
+});
+
+birthCalendar.addEventListener("mousedown", (event) => event.preventDefault());
+birthCalendarDays.addEventListener("click", (event) => {
+    const day = event.target.closest("[data-date]");
+    if (!day) return;
+    const date = dateFromISO(day.dataset.date);
+    if (date) {
+        setBirthDate(date, true);
+        birthDateDisplay.blur();
+    }
+});
+$("#birth-calendar-prev").addEventListener("click", () => {
+    birthCalendarCursor = new Date(
+        birthCalendarCursor.getFullYear(),
+        birthCalendarCursor.getMonth() - 1,
+        1,
+    );
+    renderBirthCalendar();
+});
+$("#birth-calendar-next").addEventListener("click", () => {
+    birthCalendarCursor = new Date(
+        birthCalendarCursor.getFullYear(),
+        birthCalendarCursor.getMonth() + 1,
+        1,
+    );
+    renderBirthCalendar();
+});
+$("#birth-calendar-today").addEventListener("click", () => {
+    setBirthDate(new Date(), true);
+    birthDateDisplay.blur();
+});
+$("#birth-calendar-toggle").addEventListener("click", () => {
+    birthDateDisplay.focus();
+    openBirthCalendar();
+});
+document.addEventListener("mousedown", (event) => {
+    if (!event.target.closest(".birth-date-field")) closeBirthCalendar();
+});
+
 $("#patient-form").addEventListener("submit", async (event) => {
     event.preventDefault();
+    if (!commitBirthDate()) {
+        birthDateDisplay.focus();
+        return;
+    }
     const form = event.currentTarget;
     const payload = formObject(form);
-    payload.neutered = payload.neutered === "" ? null : payload.neutered === "true";
+    const [sex, neutered] = payload.sex_status.split(":");
+    delete payload.sex_status;
+    payload.sex = sex;
+    payload.neutered = neutered === "true";
     try {
         const patient = await api("/api/patients", {method: "POST", body: payload});
         form.reset();
@@ -186,8 +457,11 @@ async function selectPatient(patientId) {
     $("#patient-chart").textContent = `차트번호 ${state.patient.chart_number}`;
     $("#patient-title").textContent = state.patient.name;
     $("#patient-meta").textContent = [
-        state.patient.species, state.patient.breed,
-        state.patient.sex === "male" ? "수컷" : state.patient.sex === "female" ? "암컷" : "성별 미상",
+        speciesLabel(state.patient.species), state.patient.breed,
+        sexLabel(state.patient.sex, state.patient.neutered),
+        formatPatientAge(state.patient.birth_date),
+        state.patient.owner_name ? `보호자 ${state.patient.owner_name}` : null,
+        state.patient.owner_phone,
         state.patient.weight_kg ? `${state.patient.weight_kg} kg` : null,
     ].filter(Boolean).join(" · ");
     renderPatients();

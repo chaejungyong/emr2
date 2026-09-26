@@ -1,5 +1,6 @@
 import hashlib
 import io
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -12,6 +13,7 @@ from .db import audit, execute, fetch_all, fetch_one, new_id, transaction
 bp = Blueprint("clinical", __name__, url_prefix="/api")
 
 ALLOWED_SEX = {"male", "female", "unknown"}
+ALLOWED_SPECIES = {"Canine", "Feline"}
 IMAGE_SIGNATURES = {
     b"\xff\xd8\xff": ("image/jpeg", ".jpg"),
     b"\x89PNG\r\n\x1a\n": ("image/png", ".png"),
@@ -36,6 +38,13 @@ def clean_text(value, max_length=None, required=False):
     if max_length and len(text) > max_length:
         raise ValueError("too_long")
     return text or None
+
+
+def clean_owner_phone(value, required=False):
+    phone = clean_text(value, 13, required)
+    if phone is not None and not re.fullmatch(r"010-[0-9]{4}-[0-9]{4}", phone):
+        raise ValueError("invalid_owner_phone")
+    return phone
 
 
 def parse_iso_date(value):
@@ -129,6 +138,8 @@ def create_patient():
         patient_id = new_id()
         patient_values = (
             clean_text(payload.get("name"), 120, True),
+            clean_text(payload.get("owner_name"), 120, True),
+            clean_owner_phone(payload.get("owner_phone"), True),
             clean_text(payload.get("species"), 80, True),
             clean_text(payload.get("breed"), 120),
             payload.get("sex", "unknown"),
@@ -137,9 +148,11 @@ def create_patient():
             payload.get("weight_kg"),
             clean_text(payload.get("notes")),
         )
-        if patient_values[3] not in ALLOWED_SEX:
+        if patient_values[3] not in ALLOWED_SPECIES:
+            raise ValueError("invalid_species")
+        if patient_values[5] not in ALLOWED_SEX:
             raise ValueError("invalid_sex")
-        if patient_values[6] is not None and not 0 < float(patient_values[6]) <= 500:
+        if patient_values[8] is not None and not 0 < float(patient_values[8]) <= 500:
             raise ValueError("invalid_weight")
     except (ValueError, TypeError):
         return validation_error("환자 입력값을 확인하세요.")
@@ -148,9 +161,9 @@ def create_patient():
         execute(
             """
             INSERT INTO patients
-                (id, chart_number, name, species, breed, sex, neutered,
-                 birth_date, weight_kg, notes)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                (id, chart_number, name, owner_name, owner_phone, species, breed,
+                 sex, neutered, birth_date, weight_kg, notes)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (patient_id, chart_number, *patient_values),
         )
@@ -193,6 +206,8 @@ def update_patient(patient_id):
         ), 400
     allowed = {
         "name",
+        "owner_name",
+        "owner_phone",
         "species",
         "breed",
         "sex",
@@ -206,8 +221,14 @@ def update_patient(patient_id):
         for key, value in payload.items():
             if key not in allowed:
                 continue
-            if key in {"name", "species"}:
+            if key in {"name", "owner_name"}:
                 value = clean_text(value, 120, True)
+            elif key == "owner_phone":
+                value = clean_owner_phone(value, True)
+            elif key == "species":
+                value = clean_text(value, 80, True)
+                if value not in ALLOWED_SPECIES:
+                    raise ValueError("invalid_species")
             elif key in {"breed"}:
                 value = clean_text(value, 120)
             elif key == "notes":

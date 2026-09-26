@@ -152,13 +152,15 @@ def test_patient_create_endpoint_generates_sequential_chart_numbers(monkeypatch)
     def fake_execute(sql, params=()):
         if "UPDATE patient_chart_number_sequence" in sql:
             sequence["next_value"] += 1
-        if len(params) == 10:
+        if len(params) == 12:
             patients.append(
                 {
                     "id": params[0],
                     "chart_number": params[1],
                     "name": params[2],
-                    "species": params[3],
+                    "owner_name": params[3],
+                    "owner_phone": params[4],
+                    "species": params[5],
                 }
             )
 
@@ -179,6 +181,8 @@ def test_patient_create_endpoint_generates_sequential_chart_numbers(monkeypatch)
         json={
             "chart_number": "MANUAL-NUMBER-IS-IGNORED",
             "name": "보리",
+            "owner_name": "김보호",
+            "owner_phone": "010-1234-5678",
             "species": "Canine",
             "sex": "female",
             "weight_kg": 7.2,
@@ -186,7 +190,12 @@ def test_patient_create_endpoint_generates_sequential_chart_numbers(monkeypatch)
     )
     second_response = app.test_client().post(
         "/api/patients",
-        json={"name": "초코", "species": "Feline"},
+        json={
+            "name": "초코",
+            "owner_name": "이보호",
+            "owner_phone": "010-8765-4321",
+            "species": "Feline",
+        },
     )
 
     assert first_response.status_code == 201
@@ -196,6 +205,47 @@ def test_patient_create_endpoint_generates_sequential_chart_numbers(monkeypatch)
         "C-000001",
         "C-000002",
     ]
+    assert patients[0]["owner_phone"] == "010-1234-5678"
+
+
+def test_patient_create_endpoint_rejects_invalid_owner_phone():
+    from app import clinical
+
+    app = Flask(__name__)
+    app.register_blueprint(clinical.bp)
+
+    response = app.test_client().post(
+        "/api/patients",
+        json={
+            "name": "토리",
+            "owner_name": "박보호",
+            "owner_phone": "010-123-45678",
+            "species": "Canine",
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.get_json()["error"] == "validation_error"
+
+
+def test_patient_create_endpoint_rejects_unsupported_species():
+    from app import clinical
+
+    app = Flask(__name__)
+    app.register_blueprint(clinical.bp)
+
+    response = app.test_client().post(
+        "/api/patients",
+        json={
+            "name": "토리",
+            "owner_name": "박보호",
+            "owner_phone": "010-1234-5678",
+            "species": "Rabbit",
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.get_json()["error"] == "validation_error"
 
 
 def test_next_patient_chart_number_endpoint_returns_preview(monkeypatch):
