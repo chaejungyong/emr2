@@ -60,6 +60,42 @@ def validation_error(error):
     return jsonify({"error": "validation_error", "message": str(error)}), 400
 
 
+def format_chart_number(sequence):
+    return f"C-{int(sequence):06d}"
+
+
+def allocate_chart_number():
+    row = fetch_one(
+        """
+        SELECT next_value
+        FROM patient_chart_number_sequence
+        WHERE id = 1
+        FOR UPDATE
+        """
+    )
+    if not row:
+        raise RuntimeError("patient chart number sequence is not initialized")
+    sequence = int(row["next_value"])
+    execute(
+        """
+        UPDATE patient_chart_number_sequence
+        SET next_value = next_value + 1
+        WHERE id = 1
+        """
+    )
+    return format_chart_number(sequence)
+
+
+@bp.get("/patients/next-chart-number")
+def preview_next_chart_number():
+    row = fetch_one(
+        "SELECT next_value FROM patient_chart_number_sequence WHERE id = 1"
+    )
+    if not row:
+        return jsonify({"error": "chart_number_sequence_unavailable"}), 503
+    return jsonify({"chart_number": format_chart_number(row["next_value"])})
+
+
 @bp.get("/patients")
 def list_patients():
     query = request.args.get("q", "").strip()
@@ -91,9 +127,7 @@ def create_patient():
         return error
     try:
         patient_id = new_id()
-        values = (
-            patient_id,
-            clean_text(payload.get("chart_number"), 100, True),
+        patient_values = (
             clean_text(payload.get("name"), 120, True),
             clean_text(payload.get("species"), 80, True),
             clean_text(payload.get("breed"), 120),
@@ -103,13 +137,14 @@ def create_patient():
             payload.get("weight_kg"),
             clean_text(payload.get("notes")),
         )
-        if values[5] not in ALLOWED_SEX:
+        if patient_values[3] not in ALLOWED_SEX:
             raise ValueError("invalid_sex")
-        if values[8] is not None and not 0 < float(values[8]) <= 500:
+        if patient_values[6] is not None and not 0 < float(patient_values[6]) <= 500:
             raise ValueError("invalid_weight")
     except (ValueError, TypeError):
         return validation_error("환자 입력값을 확인하세요.")
     with transaction():
+        chart_number = allocate_chart_number()
         execute(
             """
             INSERT INTO patients
@@ -117,7 +152,7 @@ def create_patient():
                  birth_date, weight_kg, notes)
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
-            values,
+            (patient_id, chart_number, *patient_values),
         )
         audit("patient.create", "patient", patient_id)
     return jsonify(fetch_one("SELECT * FROM patients WHERE id = %s", (patient_id,))), 201
@@ -149,8 +184,14 @@ def update_patient(patient_id):
     payload, error = body()
     if error:
         return error
+    if "chart_number" in payload:
+        return jsonify(
+            {
+                "error": "chart_number_immutable",
+                "message": "차트번호는 변경할 수 없습니다.",
+            }
+        ), 400
     allowed = {
-        "chart_number",
         "name",
         "species",
         "breed",
@@ -165,7 +206,7 @@ def update_patient(patient_id):
         for key, value in payload.items():
             if key not in allowed:
                 continue
-            if key in {"chart_number", "name", "species"}:
+            if key in {"name", "species"}:
                 value = clean_text(value, 120, True)
             elif key in {"breed"}:
                 value = clean_text(value, 120)

@@ -128,8 +128,9 @@ function renderPatients() {
     const root = $("#patient-list");
     root.innerHTML = state.patients.length ? state.patients.map((patient) => `
         <div class="patient-item ${state.patient?.id === patient.id ? "active" : ""}" data-patient="${patient.id}">
+            <span class="patient-list-chart">차트번호 ${escapeHtml(patient.chart_number)}</span>
             <strong>${escapeHtml(patient.name)}</strong>
-            <span>${escapeHtml(patient.chart_number)} · ${escapeHtml(patient.species)} · 진료 ${patient.encounter_count}회</span>
+            <span>${escapeHtml(patient.species)} · 진료 ${patient.encounter_count}회</span>
         </div>
     `).join("") : `<p class="muted small">등록된 환자가 없습니다.</p>`;
     $$("[data-patient]", root).forEach((node) => node.addEventListener("click", () => selectPatient(node.dataset.patient)));
@@ -141,7 +142,23 @@ $("#patient-search").addEventListener("input", (event) => {
     searchTimer = setTimeout(() => loadPatients(event.target.value).catch(handleError), 250);
 });
 
-$("#toggle-patient-form").addEventListener("click", () => $("#patient-form").classList.toggle("hidden"));
+$("#toggle-patient-form").addEventListener("click", async () => {
+    const form = $("#patient-form");
+    const isOpening = form.classList.contains("hidden");
+    form.classList.toggle("hidden");
+    if (!isOpening) return;
+
+    const chartLabel = $("#new-patient-chart");
+    chartLabel.textContent = "차트번호 확인 중…";
+    form.querySelector('[name="name"]').focus();
+    try {
+        const data = await api("/api/patients/next-chart-number");
+        chartLabel.textContent = `차트번호 ${data.chart_number}`;
+    } catch (error) {
+        chartLabel.textContent = "차트번호는 저장 시 자동 생성됩니다.";
+        handleError(error);
+    }
+});
 $('[data-cancel="patient"]').addEventListener("click", () => $("#patient-form").classList.add("hidden"));
 
 $("#patient-form").addEventListener("submit", async (event) => {
@@ -166,7 +183,7 @@ async function selectPatient(patientId) {
     $("#empty-state").classList.add("hidden");
     $("#patient-workspace").classList.remove("hidden");
     $("#encounter-workspace").classList.add("hidden");
-    $("#patient-chart").textContent = state.patient.chart_number;
+    $("#patient-chart").textContent = `차트번호 ${state.patient.chart_number}`;
     $("#patient-title").textContent = state.patient.name;
     $("#patient-meta").textContent = [
         state.patient.species, state.patient.breed,

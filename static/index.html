@@ -39,7 +39,7 @@
                 </div>
                 <input id="patient-search" class="search" placeholder="이름 또는 차트번호 검색">
                 <form id="patient-form" class="stack compact-form hidden">
-                    <input name="chart_number" placeholder="차트번호 *" required>
+                    <p id="new-patient-chart" class="patient-chart-label" aria-live="polite">차트번호 확인 중…</p>
                     <input name="name" placeholder="환자 이름 *" required>
                     <div class="field-row">
                         <input name="species" placeholder="축종 (예: Canine) *" required>
@@ -64,7 +64,7 @@
                 <div id="patient-workspace" class="hidden">
                     <section class="patient-banner panel">
                         <div>
-                            <p id="patient-chart" class="eyebrow"></p>
+                            <p id="patient-chart" class="patient-chart-label"></p>
                             <h1 id="patient-title"></h1>
                             <p id="patient-meta" class="muted"></p>
                         </div>

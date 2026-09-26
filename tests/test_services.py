@@ -141,16 +141,19 @@ def test_api_guard_requires_session_and_csrf():
     )
 
 
-def test_patient_create_endpoint_validates_and_persists(monkeypatch):
+def test_patient_create_endpoint_generates_sequential_chart_numbers(monkeypatch):
     from app import clinical
 
     app = Flask(__name__)
     app.register_blueprint(clinical.bp)
-    captured = {}
+    patients = []
+    sequence = {"next_value": 1}
 
-    def fake_execute(_sql, params=()):
+    def fake_execute(sql, params=()):
+        if "UPDATE patient_chart_number_sequence" in sql:
+            sequence["next_value"] += 1
         if len(params) == 10:
-            captured.update(
+            patients.append(
                 {
                     "id": params[0],
                     "chart_number": params[1],
@@ -159,22 +162,74 @@ def test_patient_create_endpoint_validates_and_persists(monkeypatch):
                 }
             )
 
-    monkeypatch.setattr(clinical, "new_id", lambda: "patient-id")
+    def fake_fetch_one(sql, _params=()):
+        if "FROM patient_chart_number_sequence" in sql:
+            return dict(sequence)
+        return patients[-1]
+
+    patient_ids = iter(("patient-id-1", "patient-id-2"))
+    monkeypatch.setattr(clinical, "new_id", lambda: next(patient_ids))
     monkeypatch.setattr(clinical, "execute", fake_execute)
-    monkeypatch.setattr(clinical, "fetch_one", lambda *_args, **_kwargs: captured)
+    monkeypatch.setattr(clinical, "fetch_one", fake_fetch_one)
     monkeypatch.setattr(clinical, "audit", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(clinical, "transaction", nullcontext)
 
-    response = app.test_client().post(
+    first_response = app.test_client().post(
         "/api/patients",
         json={
-            "chart_number": "C-001",
+            "chart_number": "MANUAL-NUMBER-IS-IGNORED",
             "name": "보리",
             "species": "Canine",
             "sex": "female",
             "weight_kg": 7.2,
         },
     )
-    assert response.status_code == 201
-    assert response.get_json()["name"] == "보리"
-    assert captured["chart_number"] == "C-001"
+    second_response = app.test_client().post(
+        "/api/patients",
+        json={"name": "초코", "species": "Feline"},
+    )
+
+    assert first_response.status_code == 201
+    assert first_response.get_json()["name"] == "보리"
+    assert second_response.status_code == 201
+    assert [patient["chart_number"] for patient in patients] == [
+        "C-000001",
+        "C-000002",
+    ]
+
+
+def test_next_patient_chart_number_endpoint_returns_preview(monkeypatch):
+    from app import clinical
+
+    app = Flask(__name__)
+    app.register_blueprint(clinical.bp)
+    monkeypatch.setattr(
+        clinical,
+        "fetch_one",
+        lambda *_args, **_kwargs: {"next_value": 42},
+    )
+
+    response = app.test_client().get("/api/patients/next-chart-number")
+
+    assert response.status_code == 200
+    assert response.get_json()["chart_number"] == "C-000042"
+
+
+def test_patient_chart_number_cannot_be_updated(monkeypatch):
+    from app import clinical
+
+    app = Flask(__name__)
+    app.register_blueprint(clinical.bp)
+    monkeypatch.setattr(
+        clinical,
+        "fetch_one",
+        lambda *_args, **_kwargs: {"id": "patient-id"},
+    )
+
+    response = app.test_client().patch(
+        "/api/patients/patient-id",
+        json={"chart_number": "C-999999"},
+    )
+
+    assert response.status_code == 400
+    assert response.get_json()["error"] == "chart_number_immutable"

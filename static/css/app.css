@@ -84,10 +84,39 @@ h2 { margin-bottom: 0; font-size: 1.04rem; }
 .patient-item:hover, .patient-item.active { border-color: #c8ddd7; background: var(--teal-soft); }
 .patient-item strong { display: block; margin-bottom: .25rem; font-size: .9rem; }
 .patient-item span { color: var(--muted); font-size: .73rem; }
+.patient-item .patient-list-chart {
+    display: inline-flex;
+    width: fit-content;
+    margin-bottom: .4rem;
+    padding: .2rem .45rem;
+    border: 1px solid #c9e3dd;
+    border-radius: 999px;
+    color: var(--teal-dark);
+    background: var(--teal-soft);
+    font-size: .65rem;
+    font-weight: 800;
+    font-variant-numeric: tabular-nums;
+}
 .empty-state { min-height: 58vh; display: grid; place-content: center; justify-items: center; padding: 3rem; text-align: center; color: var(--muted); }
 .empty-icon { margin-bottom: 1rem; color: var(--teal); font-size: 3rem; }
 .patient-banner, .encounter-header { padding: 1.1rem 1.25rem; margin-bottom: 1rem; }
 .patient-banner p, .encounter-header p { margin-bottom: 0; }
+.patient-banner .patient-chart-label,
+.compact-form .patient-chart-label {
+    display: inline-flex;
+    align-items: center;
+    width: fit-content;
+    margin-bottom: .45rem;
+    padding: .3rem .62rem;
+    border: 1px solid #c9e3dd;
+    border-radius: 999px;
+    color: var(--teal-dark);
+    background: var(--teal-soft);
+    font-size: .7rem;
+    font-weight: 800;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: .04em;
+}
 .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: .9rem; margin-bottom: 1rem; padding: 1.15rem; }
 .wide { grid-column: 1 / -1; }
 .encounter-details { margin-bottom: 1rem; padding: 1.1rem; }
