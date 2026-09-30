@@ -217,18 +217,36 @@ h2 { margin-bottom: 0; font-size: 1.04rem; }
 .status { display: inline-flex; align-items: center; width: fit-content; padding: .28rem .55rem; border-radius: 999px; background: #edf3f1; color: var(--muted); font-size: .68rem; font-weight: 800; }
 .status.completed { color: var(--teal); background: var(--teal-soft); }
 
-.clinical-grid { display: grid; grid-template-columns: minmax(230px, 31%) 1fr; gap: 1rem; align-items: start; }
-.xray-panel, .soap-panel { padding: 1.1rem; }
-.xray-list { display: grid; gap: .65rem; margin-top: 1rem; }
-.xray-card { overflow: hidden; border: 1px solid var(--line); border-radius: 9px; }
-.xray-card img { display: block; width: 100%; height: 145px; object-fit: cover; background: #eef1ef; }
-.xray-card div { padding: .65rem; }
-.xray-card textarea { margin-top: .5rem; font-size: .76rem; }
+.clinical-grid { display: block; }
+.soap-panel { padding: 1.1rem; }
+.objective-xrays { border: 1px solid var(--line); border-radius: 10px; background: #fbfcfb; }
+.objective-xrays > summary { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: .72rem .8rem; cursor: pointer; list-style: none; }
+.objective-xrays > summary::-webkit-details-marker { display: none; }
+.objective-xrays > summary > span:first-child { display: grid; gap: .15rem; }
+.objective-xrays > summary::after { content: "›"; flex: 0 0 auto; color: var(--muted); font-size: 1.2rem; line-height: 1; transition: transform .15s ease; }
+.objective-xrays[open] > summary::after { transform: rotate(90deg); }
+.xray-summary { margin-left: auto; color: var(--teal-dark); font-size: .72rem; font-weight: 800; white-space: nowrap; }
+.objective-xray-body { display: grid; gap: .85rem; padding: 0 .8rem .8rem; border-top: 1px solid var(--line); }
+.xray-form-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(160px, .55fr); gap: .7rem; padding-top: .8rem; }
+.xray-form-grid .form-actions { margin-top: 0; }
+.xray-list { display: grid; gap: .75rem; }
+.xray-empty { padding: .3rem 0; }
+.xray-card { display: grid; grid-template-columns: minmax(170px, 220px) minmax(0, 1fr); overflow: hidden; border: 1px solid var(--line); border-radius: 9px; background: #fff; }
+.xray-preview { min-height: 170px; background: #eef1ef; }
+.xray-card img { display: block; width: 100%; height: 100%; min-height: 170px; max-height: 230px; object-fit: cover; }
+.xray-card-body { display: grid; gap: .6rem; padding: .75rem; }
+.xray-card-heading { display: flex; align-items: center; justify-content: space-between; gap: .7rem; }
+.xray-card textarea { margin-top: .35rem; font-size: .78rem; }
+.xray-card .form-actions { justify-content: flex-end; margin-top: 0; }
 .review-warning { padding: .36rem .58rem; border-radius: 7px; color: #795720; background: #fff4dc; font-size: .68rem; font-weight: 800; }
 .soap-steps { display: grid; gap: .8rem; }
 .soap-step { border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
 .soap-step.expanded { border-color: #b7d5ce; }
 .soap-step.locked { opacity: .62; }
+.soap-step.locked.objective-step { opacity: 1; }
+.soap-step.locked.objective-step .generate,
+.soap-step.locked.objective-step .soap-editor,
+.soap-step.locked.objective-step .confirm { opacity: .62; }
 .soap-step-header { display: flex; align-items: center; gap: .7rem; width: 100%; padding: .75rem; border: 0; color: inherit; background: #f7faf8; text-align: left; }
 .soap-step-header:hover { background: #eef6f3; }
 .stage-letter { display: grid; place-items: center; flex: 0 0 auto; width: 32px; height: 32px; border-radius: 9px; color: #fff; background: var(--teal); font-weight: 900; }
@@ -246,7 +264,18 @@ h2 { margin-bottom: 0; font-size: 1.04rem; }
 .candidate { padding: .7rem; border: 1px solid var(--line); border-radius: 9px; background: #fff; }
 .candidate.selected { border-color: var(--teal); background: #f2faf7; }
 .candidate p { margin: 0 0 .55rem; white-space: pre-wrap; font-size: .83rem; line-height: 1.55; }
-.evidence { margin-top: .55rem; padding-top: .55rem; border-top: 1px dashed var(--line); color: var(--muted); font-size: .7rem; }
+.evidence { margin-top: .55rem; padding-top: .55rem; border-top: 1px dashed var(--line); color: var(--muted); font-size: .72rem; }
+.evidence summary { display: flex; align-items: center; gap: .45rem; width: fit-content; cursor: pointer; color: var(--teal-dark); font-weight: 800; list-style: none; }
+.evidence summary::-webkit-details-marker { display: none; }
+.evidence summary::before { content: "›"; font-size: 1rem; line-height: 1; transition: transform .15s ease; }
+.evidence[open] summary::before { transform: rotate(90deg); }
+.evidence-count { padding: .12rem .36rem; border-radius: 999px; color: var(--muted); background: #edf3f1; font-size: .62rem; }
+.evidence-list { display: none; gap: .45rem; max-height: 320px; margin-top: .55rem; overflow-y: auto; }
+.evidence[open] .evidence-list { display: grid; }
+.evidence-item { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: .65rem; padding: .6rem; border: 1px solid var(--line); border-radius: 8px; background: #fbfcfb; }
+.evidence-item > div + div { padding-left: .65rem; border-left: 1px solid var(--line); }
+.evidence-label { display: block; margin-bottom: .25rem; color: var(--teal-dark); font-size: .65rem; font-weight: 800; }
+.evidence-text { overflow-wrap: anywhere; line-height: 1.45; }
 .stale-note { color: var(--danger); font-size: .75rem; font-weight: 700; }
 
 .tag-list { display: flex; flex-wrap: wrap; gap: .4rem; }
@@ -267,7 +296,13 @@ h2 { margin-bottom: 0; font-size: 1.04rem; }
     .workspace { display: block; }
     .left-panel, .right-panel, .main-panel { max-height: none; border: 0; }
     .left-panel { max-height: 45vh; }
-    .clinical-grid, .right-panel { grid-template-columns: 1fr; }
+    .right-panel { grid-template-columns: 1fr; }
+    .objective-xrays > summary { align-items: flex-start; }
+    .xray-summary { white-space: normal; }
+    .xray-form-grid, .xray-card { grid-template-columns: 1fr; }
+    .xray-card img { height: 190px; min-height: 0; }
     .encounter-card { grid-template-columns: 1fr; }
     .badge { display: none; }
+    .evidence-item { grid-template-columns: 1fr; }
+    .evidence-item > div + div { padding-top: .55rem; padding-left: 0; border-top: 1px solid var(--line); border-left: 0; }
 }

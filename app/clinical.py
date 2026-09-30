@@ -30,6 +30,41 @@ def affected_soap_stages(updated_fields):
     return ()
 
 
+def xray_context_signature(xray):
+    """Return the values exposed to the LLM, or None when the X-ray is excluded."""
+    reading_text = xray.get("reading_text")
+    if not reading_text:
+        return None
+    return (xray.get("taken_at"), xray.get("body_region"), reading_text)
+
+
+def mark_soap_stages_stale(encounter_id, stages):
+    if not stages:
+        return
+    placeholders = ", ".join(["%s"] * len(stages))
+    execute(
+        f"""
+        UPDATE soap_sections ss
+        JOIN soap_documents sd ON sd.id = ss.soap_document_id
+        SET ss.status = CASE
+                WHEN ss.current_text IS NULL THEN 'pending'
+                ELSE 'stale'
+            END
+        WHERE sd.encounter_id = %s
+          AND ss.stage IN ({placeholders})
+        """,
+        [encounter_id, *stages],
+    )
+    execute(
+        "UPDATE soap_documents SET status = 'draft' WHERE encounter_id = %s",
+        (encounter_id,),
+    )
+    execute(
+        "UPDATE encounters SET status = 'draft' WHERE id = %s",
+        (encounter_id,),
+    )
+
+
 def body():
     payload = request.get_json(silent=True)
     if not isinstance(payload, dict):
@@ -466,33 +501,7 @@ def update_encounter(encounter_id):
     with transaction():
         execute(f"UPDATE encounters SET {', '.join(updates)} WHERE id = %s", params)
         affected_stages = affected_soap_stages(updated_fields)
-        if affected_stages:
-            placeholders = ", ".join(["%s"] * len(affected_stages))
-            execute(
-                f"""
-                UPDATE soap_sections ss
-                JOIN soap_documents sd ON sd.id = ss.soap_document_id
-                SET ss.status = CASE
-                        WHEN ss.current_text IS NULL THEN 'pending'
-                        ELSE 'stale'
-                    END
-                WHERE sd.encounter_id = %s
-                  AND ss.stage IN ({placeholders})
-                """,
-                [encounter_id, *affected_stages],
-            )
-            execute(
-                """
-                UPDATE soap_documents
-                SET status = 'draft'
-                WHERE encounter_id = %s
-                """,
-                (encounter_id,),
-            )
-            execute(
-                "UPDATE encounters SET status = 'draft' WHERE id = %s",
-                (encounter_id,),
-            )
+        mark_soap_stages_stale(encounter_id, affected_stages)
         audit("encounter.update", "encounter", encounter_id, {"fields": updated_fields})
     return get_encounter(encounter_id)
 
@@ -587,6 +596,14 @@ def upload_xray(encounter_id):
                     reading_text,
                 ),
             )
+            if xray_context_signature(
+                {
+                    "taken_at": taken_at,
+                    "body_region": body_region,
+                    "reading_text": reading_text,
+                }
+            ):
+                mark_soap_stages_stale(encounter_id, SOAP_STAGES[1:])
             audit("xray.upload", "xray", xray_id, {"size_bytes": len(data)})
     except Exception:
         destination.unlink(missing_ok=True)
@@ -624,12 +641,21 @@ def get_xray_file(xray_id):
 
 @bp.patch("/xrays/<xray_id>")
 def update_xray(xray_id):
-    if not fetch_one("SELECT id FROM xray_assets WHERE id = %s", (xray_id,)):
+    existing = fetch_one(
+        """
+        SELECT id, encounter_id, taken_at, body_region, reading_text
+        FROM xray_assets
+        WHERE id = %s
+        """,
+        (xray_id,),
+    )
+    if not existing:
         return jsonify({"error": "xray_not_found"}), 404
     payload, error = body()
     if error:
         return error
     updates, params = [], []
+    updated_xray = dict(existing)
     try:
         for key in ("reading_text", "body_region", "taken_at"):
             if key not in payload:
@@ -641,12 +667,18 @@ def update_xray(xray_id):
                 value = clean_text(value, 120 if key == "body_region" else None)
             updates.append(f"{key} = %s")
             params.append(value)
+            updated_xray[key] = value
     except ValueError:
         return validation_error("X-ray 입력값을 확인하세요.")
     if not updates:
         return jsonify({"error": "no_supported_fields"}), 400
+    context_changed = (
+        xray_context_signature(existing) != xray_context_signature(updated_xray)
+    )
     params.append(xray_id)
     with transaction():
         execute(f"UPDATE xray_assets SET {', '.join(updates)} WHERE id = %s", params)
+        if context_changed:
+            mark_soap_stages_stale(existing["encounter_id"], SOAP_STAGES[1:])
         audit("xray.update", "xray", xray_id, {"fields": list(payload)})
     return jsonify(present_xray(fetch_one("SELECT * FROM xray_assets WHERE id = %s", (xray_id,))))

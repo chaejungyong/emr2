@@ -19,3 +19,6 @@ storage/xrays/*
 !storage/xrays/.gitkeep
 storage/knowledge/inbox/*
 !storage/knowledge/inbox/.gitkeep
+
+# 개인 장비/원격 접속 정보 문서 (Synology Drive에 별도 보관)
+docs/private/

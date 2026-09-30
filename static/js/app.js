@@ -582,7 +582,6 @@ async function openEncounter(encounterId) {
     populateEncounterForm();
     reflectEncounterStatus();
     renderEncounters();
-    renderXrays();
     renderSoap();
     $("#encounter-workspace").scrollIntoView({behavior: "smooth", block: "start"});
 }
@@ -685,45 +684,114 @@ $("#disease-form").addEventListener("submit", async (event) => {
     } catch (error) { handleError(error); }
 });
 
-$("#xray-form").addEventListener("submit", async (event) => {
-    event.preventDefault();
-    if (!state.encounter) return;
-    const form = event.currentTarget;
-    const button = $("button", form);
-    button.disabled = true;
-    try {
-        await api(`/api/encounters/${state.encounter.id}/xrays`, {
-            method: "POST", body: new FormData(form),
-        });
-        form.reset();
-        state.encounter = await api(`/api/encounters/${state.encounter.id}`);
-        renderXrays();
-        toast("X-ray와 판독 소견을 저장했습니다.");
-    } catch (error) { handleError(error); }
-    finally { button.disabled = false; }
-});
-
-function renderXrays() {
-    const root = $("#xray-list");
+function xrayPanelHtml() {
     const xrays = state.encounter?.xrays || [];
-    root.innerHTML = xrays.length ? xrays.map((xray) => `
+    const completed = xrays.filter((xray) => String(xray.reading_text || "").trim()).length;
+    const cards = xrays.length ? xrays.map((xray) => `
         <article class="xray-card" data-xray="${xray.id}">
-            <a href="${xray.file_url}" target="_blank" rel="noopener"><img src="${xray.file_url}" alt="${escapeHtml(xray.original_name)}"></a>
-            <div>
-                <strong>${escapeHtml(xray.body_region || xray.original_name)}</strong>
-                <textarea rows="3" aria-label="판독 소견">${escapeHtml(xray.reading_text || "")}</textarea>
-                <button class="secondary save-reading">소견 저장</button>
+            <a class="xray-preview" href="${escapeHtml(xray.file_url)}" target="_blank" rel="noopener">
+                <img src="${escapeHtml(xray.file_url)}" alt="${escapeHtml(xray.original_name)}">
+            </a>
+            <div class="xray-card-body">
+                <div class="xray-card-heading">
+                    <strong>${escapeHtml(xray.body_region || xray.original_name)}</strong>
+                    <span class="status ${xray.reading_text ? "completed" : ""}">${xray.reading_text ? "판독 완료" : "판독 미입력"}</span>
+                </div>
+                <label>판독 소견
+                    <textarea class="xray-reading" rows="4" placeholder="영상에서 확인한 객관적 소견을 입력하세요.">${escapeHtml(xray.reading_text || "")}</textarea>
+                </label>
+                <div class="form-actions">
+                    <button type="button" class="secondary save-reading">소견 저장</button>
+                </div>
             </div>
         </article>
-    `).join("") : `<p class="muted small">등록된 X-ray가 없습니다.</p>`;
-    $$(".save-reading", root).forEach((button) => button.addEventListener("click", async () => {
+    `).join("") : `<p class="muted small xray-empty">등록된 X-ray가 없습니다.</p>`;
+    return `
+        <details class="objective-xrays">
+            <summary>
+                <span>
+                    <strong>X-ray 및 판독 소견</strong>
+                    <span class="muted small">객관적 영상검사 자료</span>
+                </span>
+                <span class="xray-summary">X-ray ${xrays.length}건 · 판독 완료 ${completed}건</span>
+            </summary>
+            <div class="objective-xray-body">
+                <form class="xray-form xray-form-grid">
+                    <label>X-ray 파일
+                        <input name="file" type="file" accept="image/jpeg,image/png" required>
+                    </label>
+                    <label>촬영 부위
+                        <input name="body_region" placeholder="예: 흉부">
+                    </label>
+                    <label class="wide">판독 소견
+                        <textarea name="reading_text" rows="3" placeholder="수의사 판독 소견을 입력하세요."></textarea>
+                    </label>
+                    <div class="form-actions wide">
+                        <span class="muted small">X-ray 원본은 AI에 전달되지 않고 판독 소견만 사용됩니다.</span>
+                        <button type="submit" class="secondary">X-ray 추가</button>
+                    </div>
+                </form>
+                <div class="xray-list">${cards}</div>
+            </div>
+        </details>
+    `;
+}
+
+async function refreshAfterXray(physicalExamDraft) {
+    const [encounter, soap] = await Promise.all([
+        api(`/api/encounters/${state.encounter.id}`),
+        api(`/api/encounters/${state.encounter.id}/soap`),
+    ]);
+    state.encounter = encounter;
+    state.soap = soap;
+    reflectEncounterStatus();
+    renderEncounters();
+    renderSoap();
+    const objectiveStep = $('.soap-step[data-stage="O"]');
+    if (objectiveStep) {
+        objectiveStep.classList.add("expanded");
+        objectiveStep.classList.remove("collapsed");
+        $(".soap-step-header", objectiveStep).setAttribute("aria-expanded", "true");
+        const source = $(".objective-source", objectiveStep);
+        if (source && physicalExamDraft !== null) source.value = physicalExamDraft;
+        const xrayDetails = $(".objective-xrays", objectiveStep);
+        if (xrayDetails) xrayDetails.open = true;
+    }
+}
+
+function bindXrayControls(step) {
+    const form = $(".xray-form", step);
+    form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        if (!state.encounter) return;
+        const button = $('button[type="submit"]', form);
+        const physicalExamDraft = $(".objective-source", step)?.value ?? null;
+        button.disabled = true;
+        try {
+            await api(`/api/encounters/${state.encounter.id}/xrays`, {
+                method: "POST", body: new FormData(form),
+            });
+            await refreshAfterXray(physicalExamDraft);
+            toast("X-ray와 판독 소견을 저장했습니다.");
+        } catch (error) {
+            handleError(error);
+            button.disabled = false;
+        }
+    });
+    $$(".save-reading", step).forEach((button) => button.addEventListener("click", async () => {
         const card = button.closest("[data-xray]");
+        const physicalExamDraft = $(".objective-source", step)?.value ?? null;
+        button.disabled = true;
         try {
             await api(`/api/xrays/${card.dataset.xray}`, {
-                method: "PATCH", body: {reading_text: $("textarea", card).value},
+                method: "PATCH", body: {reading_text: $(".xray-reading", card).value},
             });
+            await refreshAfterXray(physicalExamDraft);
             toast("판독 소견을 저장했습니다.");
-        } catch (error) { handleError(error); }
+        } catch (error) {
+            handleError(error);
+            button.disabled = false;
+        }
     }));
 }
 
@@ -731,10 +799,26 @@ const stageNames = {S: "주관적 정보", O: "객관적 정보", A: "평가", P
 
 function evidenceHtml(items = []) {
     if (!items.length) return "";
-    return `<div class="evidence"><strong>근거</strong>${items.map((item) => {
+    return `
+        <details class="evidence">
+            <summary>
+                <span>근거 보기</span>
+                <span class="evidence-count">${items.length}개</span>
+            </summary>
+            <div class="evidence-list">
+                ${items.map((item) => {
         const pages = item.page_start ? ` p.${item.page_start}${item.page_end && item.page_end !== item.page_start ? `–${item.page_end}` : ""}` : "";
-        return `<div>${escapeHtml(item.document_name)}${pages} · ${escapeHtml(item.excerpt.slice(0, 180))}</div>`;
-    }).join("")}</div>`;
+        const relatedText = item.excerpt_ko || item.excerpt || "";
+        return `
+                    <article class="evidence-item">
+                        <div><span class="evidence-label">레퍼런스</span><div class="evidence-text">${escapeHtml(item.document_name)}${pages}</div></div>
+                        <div><span class="evidence-label">관련 내용</span><div class="evidence-text">${escapeHtml(item.excerpt_ko ? relatedText : relatedText.slice(0, 180))}</div></div>
+                    </article>
+                `;
+    }).join("")}
+            </div>
+        </details>
+    `;
 }
 
 function focusStage(sections) {
@@ -772,7 +856,7 @@ function renderSoap() {
             </div>
         `).join("");
         return `
-            <article class="soap-step ${expanded ? "expanded" : "collapsed"} ${section.unlocked ? "" : "locked"}" data-stage="${section.stage}">
+            <article class="soap-step ${expanded ? "expanded" : "collapsed"} ${section.unlocked ? "" : "locked"} ${section.stage === "O" ? "objective-step" : ""}" data-stage="${section.stage}">
                 <button type="button" class="soap-step-header" aria-expanded="${expanded}">
                     <span class="stage-letter">${section.stage}</span>
                     <strong>${stageNames[section.stage]}</strong>
@@ -782,11 +866,12 @@ function renderSoap() {
                 </button>
                 <div class="soap-step-body">
                     ${!section.unlocked ? `<p class="muted small">이전 단계를 확정하면 활성화됩니다.</p>` : ""}
-                    ${stale ? `<p class="stale-note">이전 단계가 수정되어 재검토가 필요합니다.</p>` : ""}
-                    ${section.stage === "O" && section.unlocked ? `
+                    ${stale ? `<p class="stale-note">관련 입력 정보가 수정되어 재검토가 필요합니다.</p>` : ""}
+                    ${section.stage === "O" ? `
                         <label>신체검사/기초 소견
                             <textarea class="objective-source" rows="4" placeholder="청진, 호흡수, 심박수, 활력징후 등">${escapeHtml(state.encounter?.physical_exam || "")}</textarea>
                         </label>
+                        ${xrayPanelHtml()}
                     ` : ""}
                     <button class="secondary generate" ${section.unlocked ? "" : "disabled"}>${section.candidates.length ? "AI 초안 다시 작성" : `${section.stage} 초안 작성`}</button>
                     ${section.candidates.length ? `
@@ -813,6 +898,7 @@ function bindSoapStep(step) {
         step.classList.toggle("collapsed", !expanded);
         header.setAttribute("aria-expanded", String(expanded));
     });
+    if (stage === "O") bindXrayControls(step);
     $(".generate", step).addEventListener("click", async (event) => {
         const button = event.currentTarget;
         button.disabled = true;

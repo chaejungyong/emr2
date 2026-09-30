@@ -81,15 +81,17 @@ def build_context(encounter_id, stage, sections):
         """,
         (encounter_id,),
     )
-    xrays = fetch_all(
-        """
-        SELECT taken_at, body_region, reading_text
-        FROM xray_assets
-        WHERE encounter_id = %s AND reading_text IS NOT NULL AND reading_text <> ''
-        ORDER BY created_at
-        """,
-        (encounter_id,),
-    )
+    xrays = []
+    if stage != "S":
+        xrays = fetch_all(
+            """
+            SELECT taken_at, body_region, reading_text
+            FROM xray_assets
+            WHERE encounter_id = %s AND reading_text IS NOT NULL AND reading_text <> ''
+            ORDER BY created_at
+            """,
+            (encounter_id,),
+        )
     prior_rows = fetch_all(
         """
         SELECT e.id AS encounter_id, e.visit_at, d.name AS disease_name,
@@ -228,7 +230,8 @@ def present_document(document):
             for candidate in candidates:
                 candidate["evidence"] = fetch_all(
                     """
-                    SELECT chunk_id, document_name, page_start, page_end, score, excerpt
+                    SELECT chunk_id, document_name, page_start, page_end, score,
+                           excerpt, excerpt_ko
                     FROM candidate_evidence
                     WHERE candidate_id = %s
                     ORDER BY score DESC
@@ -298,9 +301,16 @@ def generate_candidates(encounter_id, stage):
             ),
         )
     try:
-        candidates, usage = llm.generate_candidates(
+        candidates, generation_usage = llm.generate_candidates(
             stage, context, current_app.config["SOAP_CANDIDATE_COUNT"]
         )
+        translations, translation_usage = llm.translate_evidence(evidence)
+        for source in evidence:
+            source["excerpt_ko"] = translations.get(source["chunk_id"])
+        usage = {
+            key: (generation_usage.get(key) or 0) + (translation_usage.get(key) or 0)
+            for key in ("prompt_tokens", "completion_tokens")
+        }
     except AIServiceError as error:
         with transaction():
             execute(
@@ -335,8 +345,8 @@ def generate_candidates(encounter_id, stage):
                     """
                     INSERT INTO candidate_evidence
                         (id, candidate_id, chunk_id, document_name, page_start,
-                         page_end, score, excerpt)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                         page_end, score, excerpt, excerpt_ko)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """,
                     (
                         new_id(),
@@ -347,6 +357,7 @@ def generate_candidates(encounter_id, stage):
                         source["page_end"],
                         source["score"],
                         source["excerpt"],
+                        source["excerpt_ko"],
                     ),
                 )
             candidate_rows.append({"id": candidate_id, "rank_no": rank, "content": content})
