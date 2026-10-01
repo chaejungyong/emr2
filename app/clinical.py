@@ -153,12 +153,21 @@ def preview_next_chart_number():
 @bp.get("/patients")
 def list_patients():
     query = request.args.get("q", "").strip()
+    status = request.args.get("status", "active")
+    if status not in {"active", "archived", "all"}:
+        return jsonify({"error": "invalid_patient_status"}), 400
+
+    conditions = []
     params = []
-    where = ""
+    if status == "active":
+        conditions.append("p.is_archived = FALSE")
+    elif status == "archived":
+        conditions.append("p.is_archived = TRUE")
     if query:
-        where = "WHERE p.name LIKE %s OR p.chart_number LIKE %s"
+        conditions.append("(p.name LIKE %s OR p.chart_number LIKE %s)")
         needle = f"%{query}%"
         params.extend([needle, needle])
+    where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
     rows = fetch_all(
         f"""
         SELECT p.*,
@@ -260,6 +269,7 @@ def update_patient(patient_id):
         "birth_date",
         "weight_kg",
         "notes",
+        "is_archived",
     }
     updates, params = [], []
     try:
@@ -284,6 +294,14 @@ def update_patient(patient_id):
                 value = parse_iso_date(value)
             elif key == "weight_kg" and value is not None and not 0 < float(value) <= 500:
                 raise ValueError("invalid_weight")
+            elif key == "is_archived":
+                if type(value) is not bool:
+                    raise ValueError("invalid_archive_status")
+                updates.append("is_archived = %s")
+                params.append(value)
+                updates.append("archived_at = %s")
+                params.append(datetime.utcnow() if value else None)
+                continue
             updates.append(f"{key} = %s")
             params.append(value)
     except (ValueError, TypeError):
@@ -293,7 +311,11 @@ def update_patient(patient_id):
     params.append(patient_id)
     with transaction():
         execute(f"UPDATE patients SET {', '.join(updates)} WHERE id = %s", params)
-        audit("patient.update", "patient", patient_id, {"fields": list(payload)})
+        if set(payload) == {"is_archived"}:
+            action = "patient.archive" if payload["is_archived"] else "patient.restore"
+        else:
+            action = "patient.update"
+        audit(action, "patient", patient_id, {"fields": list(payload)})
     return jsonify(fetch_one("SELECT * FROM patients WHERE id = %s", (patient_id,)))
 
 
@@ -390,8 +412,14 @@ def create_encounter():
     if error:
         return error
     patient_id = payload.get("patient_id")
-    if not fetch_one("SELECT id FROM patients WHERE id = %s", (patient_id,)):
+    patient = fetch_one(
+        "SELECT id, is_archived FROM patients WHERE id = %s",
+        (patient_id,),
+    )
+    if not patient:
         return jsonify({"error": "patient_not_found"}), 404
+    if patient["is_archived"]:
+        return jsonify({"error": "patient_archived"}), 409
     disease_id = payload.get("disease_id") or None
     if disease_id and not fetch_one("SELECT id FROM diseases WHERE id = %s", (disease_id,)):
         return jsonify({"error": "disease_not_found"}), 404

@@ -13,6 +13,8 @@ const state = {
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 
+const NOTEBOOKLM_URL = "https://notebook.google.com/";
+
 function escapeHtml(value) {
     return String(value ?? "")
         .replaceAll("&", "&amp;")
@@ -225,8 +227,13 @@ $("#logout-button").addEventListener("click", async () => {
     try { await api("/api/auth/logout", {method: "POST"}); } finally { showLogin(); }
 });
 
-async function loadPatients(query = "") {
-    const data = await api(`/api/patients${query ? `?q=${encodeURIComponent(query)}` : ""}`);
+async function loadPatients(query = $("#patient-search").value) {
+    const params = new URLSearchParams();
+    const normalizedQuery = String(query || "").trim();
+    if (normalizedQuery) params.set("q", normalizedQuery);
+    if ($("#show-archived-patients").checked) params.set("status", "all");
+    const suffix = params.toString();
+    const data = await api(`/api/patients${suffix ? `?${suffix}` : ""}`);
     state.patients = data.items;
     renderPatients();
 }
@@ -234,12 +241,12 @@ async function loadPatients(query = "") {
 function renderPatients() {
     const root = $("#patient-list");
     root.innerHTML = state.patients.length ? state.patients.map((patient) => `
-        <div class="patient-item ${state.patient?.id === patient.id ? "active" : ""}" data-patient="${patient.id}">
+        <div class="patient-item ${state.patient?.id === patient.id ? "active" : ""} ${patient.is_archived ? "archived" : ""}" data-patient="${patient.id}">
             <span class="patient-list-chart">차트번호 ${escapeHtml(patient.chart_number)}</span>
             <strong>${escapeHtml(patient.name)}</strong>
-            <span>${escapeHtml(speciesLabel(patient.species))} · 진료 ${patient.encounter_count}회</span>
+            <span>${escapeHtml(speciesLabel(patient.species))} · 진료 ${patient.encounter_count}회${patient.is_archived ? " · 보관됨" : ""}</span>
         </div>
-    `).join("") : `<p class="muted small">등록된 환자가 없습니다.</p>`;
+    `).join("") : `<p class="muted small">표시할 환자가 없습니다.</p>`;
     $$("[data-patient]", root).forEach((node) => node.addEventListener("click", () => selectPatient(node.dataset.patient)));
 }
 
@@ -247,6 +254,16 @@ let searchTimer;
 $("#patient-search").addEventListener("input", (event) => {
     clearTimeout(searchTimer);
     searchTimer = setTimeout(() => loadPatients(event.target.value).catch(handleError), 250);
+});
+$("#show-archived-patients").addEventListener("change", (event) => {
+    if (!event.currentTarget.checked && state.patient?.is_archived) {
+        state.patient = null;
+        state.encounter = null;
+        state.soap = null;
+        $("#patient-workspace").classList.add("hidden");
+        $("#empty-state").classList.remove("hidden");
+    }
+    loadPatients().catch(handleError);
 });
 
 $("#toggle-patient-form").addEventListener("click", async () => {
@@ -312,6 +329,41 @@ $("#patient-contact-form").addEventListener("submit", async (event) => {
         await selectPatient(patientId);
         toast("보호자 정보를 수정했습니다.");
     } catch (error) { handleError(error); }
+});
+
+$("#archive-patient-button").addEventListener("click", async (event) => {
+    if (!state.patient) return;
+    const button = event.currentTarget;
+    const patientId = state.patient.id;
+    const archive = !Boolean(state.patient.is_archived);
+    const message = archive
+        ? "이 환자를 기본 목록에서 숨길까요? 진료 기록은 삭제되지 않습니다."
+        : "이 환자를 기본 목록에 다시 표시할까요?";
+    if (!confirm(message)) return;
+
+    button.disabled = true;
+    try {
+        await api(`/api/patients/${patientId}`, {
+            method: "PATCH",
+            body: {is_archived: archive},
+        });
+        if (archive && !$("#show-archived-patients").checked) {
+            state.patient = null;
+            state.encounter = null;
+            state.soap = null;
+            $("#patient-workspace").classList.add("hidden");
+            $("#empty-state").classList.remove("hidden");
+            await loadPatients();
+        } else {
+            await loadPatients();
+            await selectPatient(patientId);
+        }
+        toast(archive ? "환자를 보관 목록으로 이동했습니다." : "환자를 기본 목록에 복원했습니다.");
+    } catch (error) {
+        handleError(error);
+    } finally {
+        button.disabled = false;
+    }
 });
 
 const birthDateDisplay = $("#patient-birth-date-display");
@@ -494,6 +546,14 @@ async function selectPatient(patientId) {
     $("#encounter-workspace").classList.add("hidden");
     $("#patient-chart").textContent = `차트번호 ${state.patient.chart_number}`;
     $("#patient-title").textContent = state.patient.name;
+    const archived = Boolean(state.patient.is_archived);
+    $("#patient-archive-status").classList.toggle("hidden", !archived);
+    const archiveButton = $("#archive-patient-button");
+    archiveButton.textContent = archived ? "환자 복원" : "목록에서 숨기기";
+    archiveButton.className = archived ? "secondary" : "danger-ghost";
+    const encounterButton = $("#new-encounter-button");
+    encounterButton.disabled = archived;
+    encounterButton.title = archived ? "환자를 복원한 뒤 새 진료를 작성할 수 있습니다." : "";
     $("#patient-meta").textContent = [
         speciesLabel(state.patient.species), state.patient.breed,
         sexLabel(state.patient.sex, state.patient.neutered),
@@ -855,6 +915,19 @@ function renderSoap() {
                 ${evidenceHtml(candidate.evidence)}
             </div>
         `).join("");
+        const notebookLabel = {
+            A: "NotebookLM 감별진단",
+            P: "NotebookLM 프로토콜",
+        }[section.stage];
+        const notebookLink = notebookLabel && section.unlocked ? `
+            <a
+                class="secondary notebooklm-link"
+                href="${NOTEBOOKLM_URL}"
+                target="_blank"
+                rel="noopener noreferrer"
+                title="환자정보를 자동 전송하지 않고 NotebookLM을 새 탭에서 엽니다."
+            >${notebookLabel} <span aria-hidden="true">↗</span></a>
+        ` : "";
         return `
             <article class="soap-step ${expanded ? "expanded" : "collapsed"} ${section.unlocked ? "" : "locked"} ${section.stage === "O" ? "objective-step" : ""}" data-stage="${section.stage}">
                 <button type="button" class="soap-step-header" aria-expanded="${expanded}">
@@ -873,7 +946,10 @@ function renderSoap() {
                         </label>
                         ${xrayPanelHtml()}
                     ` : ""}
-                    <button class="secondary generate" ${section.unlocked ? "" : "disabled"}>${section.candidates.length ? "AI 초안 다시 작성" : `${section.stage} 초안 작성`}</button>
+                    <div class="soap-stage-actions">
+                        <button class="secondary generate" ${section.unlocked ? "" : "disabled"}>${section.candidates.length ? "AI 초안 다시 작성" : `${section.stage} 초안 작성`}</button>
+                        ${notebookLink}
+                    </div>
                     ${section.candidates.length ? `
                         <details class="candidates-fold" ${candidatesOpen ? "open" : ""}>
                             <summary>AI 작성 초안 ${section.candidates.length}개</summary>
@@ -993,6 +1069,7 @@ function handleError(error) {
     console.error(error);
     const messages = {
         previous_stage_not_confirmed: "이전 SOAP 단계를 먼저 확정하세요.",
+        patient_archived: "보관된 환자입니다. 환자를 복원한 뒤 새 진료를 작성하세요.",
         index_job_already_running: "이미 실행 중인 색인 작업이 있습니다.",
         ai_generation_failed: error.message,
         conflict: "이미 사용 중인 값이거나 참조 중인 데이터입니다.",

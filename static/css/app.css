@@ -75,6 +75,8 @@ h2 { margin-bottom: 0; font-size: 1.04rem; }
 .ghost { color: inherit; background: transparent; border-color: currentColor; opacity: .78; }
 .danger-ghost { color: var(--danger); background: #fff7f7; border-color: #eed2d2; }
 .search { margin-bottom: .75rem; background: #f8faf9; }
+.patient-archive-filter { display: flex; align-items: center; gap: .45rem; margin: -.15rem 0 .8rem; color: var(--muted); font-size: .72rem; font-weight: 700; cursor: pointer; }
+.patient-archive-filter input { width: auto; margin: 0; accent-color: var(--teal); }
 .stack { display: grid; gap: .65rem; }
 .compact-form { margin-bottom: 1rem; padding: .85rem; border-radius: 10px; background: #f7faf8; }
 .field-row { display: grid; grid-template-columns: 1fr 1fr; gap: .55rem; }
@@ -155,6 +157,8 @@ h2 { margin-bottom: 0; font-size: 1.04rem; }
 .item-list { display: grid; gap: .45rem; }
 .patient-item { padding: .8rem; border: 1px solid transparent; border-radius: 10px; cursor: pointer; transition: .15s ease; }
 .patient-item:hover, .patient-item.active { border-color: #c8ddd7; background: var(--teal-soft); }
+.patient-item.archived { border-style: dashed; opacity: .7; }
+.patient-item.archived.active { opacity: 1; }
 .patient-item strong { display: block; margin-bottom: .25rem; font-size: .9rem; }
 .patient-item span { color: var(--muted); font-size: .73rem; }
 .patient-item .patient-list-chart {
@@ -174,6 +178,9 @@ h2 { margin-bottom: 0; font-size: 1.04rem; }
 .empty-icon { margin-bottom: 1rem; color: var(--teal); font-size: 3rem; }
 .patient-banner, .encounter-header { padding: 1.1rem 1.25rem; margin-bottom: 1rem; }
 .patient-banner p, .encounter-header p { margin-bottom: 0; }
+.patient-title-line { display: flex; align-items: center; flex-wrap: wrap; gap: .55rem; }
+.patient-title-line h1 { margin-bottom: .35rem; }
+.status.archived { color: #795720; background: #fff4dc; }
 .patient-banner .patient-chart-label,
 .compact-form .patient-chart-label {
     display: inline-flex;
@@ -258,6 +265,8 @@ h2 { margin-bottom: 0; font-size: 1.04rem; }
 .soap-step.expanded .soap-chevron { transform: translateY(.12rem) rotate(-135deg); }
 .soap-step.collapsed .soap-step-body { display: none; }
 .soap-step-body { display: grid; gap: .7rem; padding: .8rem; }
+.soap-stage-actions { display: flex; flex-wrap: wrap; gap: .5rem; }
+.notebooklm-link { display: inline-flex; align-items: center; gap: .35rem; text-decoration: none; }
 .candidates-fold { border: 1px solid var(--line); border-radius: 9px; background: #fbfcfb; }
 .candidates-fold summary { padding: .55rem .75rem; cursor: pointer; font-size: .78rem; font-weight: 750; }
 .candidates-fold .candidates { display: grid; gap: .55rem; padding: 0 .7rem .7rem; }

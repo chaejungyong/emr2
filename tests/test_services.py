@@ -444,3 +444,81 @@ def test_patient_chart_number_cannot_be_updated(monkeypatch):
 
     assert response.status_code == 400
     assert response.get_json()["error"] == "chart_number_immutable"
+
+
+def test_patient_list_hides_archived_by_default_and_can_include_all(monkeypatch):
+    from app import clinical
+
+    app = Flask(__name__)
+    app.register_blueprint(clinical.bp)
+    calls = []
+
+    def fake_fetch_all(sql, params=()):
+        calls.append((sql, params))
+        return []
+
+    monkeypatch.setattr(clinical, "fetch_all", fake_fetch_all)
+    client = app.test_client()
+
+    assert client.get("/api/patients").status_code == 200
+    assert "p.is_archived = FALSE" in calls[-1][0]
+
+    assert client.get("/api/patients?status=all").status_code == 200
+    assert "p.is_archived" not in calls[-1][0]
+
+    response = client.get("/api/patients?status=invalid")
+    assert response.status_code == 400
+    assert response.get_json()["error"] == "invalid_patient_status"
+
+
+def test_patient_can_be_archived_and_restored_without_deletion(monkeypatch):
+    from app import clinical
+
+    app = Flask(__name__)
+    app.register_blueprint(clinical.bp)
+    patient = {"id": "patient-id", "is_archived": False, "archived_at": None}
+    audits = []
+
+    def fake_execute(sql, params=()):
+        if sql.startswith("UPDATE patients SET"):
+            patient["is_archived"] = params[0]
+            patient["archived_at"] = params[1]
+
+    monkeypatch.setattr(clinical, "fetch_one", lambda *_args, **_kwargs: patient)
+    monkeypatch.setattr(clinical, "execute", fake_execute)
+    monkeypatch.setattr(clinical, "transaction", nullcontext)
+    monkeypatch.setattr(clinical, "audit", lambda action, *_args, **_kwargs: audits.append(action))
+    client = app.test_client()
+
+    response = client.patch("/api/patients/patient-id", json={"is_archived": True})
+    assert response.status_code == 200
+    assert response.get_json()["is_archived"] is True
+    assert patient["archived_at"] is not None
+    assert audits[-1] == "patient.archive"
+
+    response = client.patch("/api/patients/patient-id", json={"is_archived": False})
+    assert response.status_code == 200
+    assert patient["archived_at"] is None
+    assert audits[-1] == "patient.restore"
+
+    assert client.patch("/api/patients/patient-id", json={"is_archived": 1}).status_code == 400
+
+
+def test_archived_patient_cannot_start_new_encounter(monkeypatch):
+    from app import clinical
+
+    app = Flask(__name__)
+    app.register_blueprint(clinical.bp)
+    monkeypatch.setattr(
+        clinical,
+        "fetch_one",
+        lambda *_args, **_kwargs: {"id": "patient-id", "is_archived": True},
+    )
+
+    response = app.test_client().post(
+        "/api/encounters",
+        json={"patient_id": "patient-id", "chief_complaint": "기침"},
+    )
+
+    assert response.status_code == 409
+    assert response.get_json()["error"] == "patient_archived"
