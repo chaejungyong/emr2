@@ -179,6 +179,7 @@ function showLogin() {
     clearInterval(state.pollTimer);
     state.pollTimer = null;
     state.csrf = "";
+    closeAdminDrawer();
     $("#login-view").classList.remove("hidden");
     $("#app-view").classList.add("hidden");
 }
@@ -262,6 +263,7 @@ $("#show-archived-patients").addEventListener("change", (event) => {
         state.soap = null;
         $("#patient-workspace").classList.add("hidden");
         $("#empty-state").classList.remove("hidden");
+        syncHistoryPanel();
     }
     loadPatients().catch(handleError);
 });
@@ -353,6 +355,7 @@ $("#archive-patient-button").addEventListener("click", async (event) => {
             state.soap = null;
             $("#patient-workspace").classList.add("hidden");
             $("#empty-state").classList.remove("hidden");
+            syncHistoryPanel();
             await loadPatients();
         } else {
             await loadPatients();
@@ -563,7 +566,17 @@ async function selectPatient(patientId) {
         state.patient.weight_kg ? `${state.patient.weight_kg} kg` : null,
     ].filter(Boolean).join(" · ");
     renderPatients();
+    syncHistoryPanel();
     renderEncounters();
+}
+
+function syncHistoryPanel() {
+    const hasPatient = Boolean(state.patient);
+    $("#history-empty").classList.toggle("hidden", hasPatient);
+    $("#history-content").classList.toggle("hidden", !hasPatient);
+    $("#history-patient-name").textContent = hasPatient
+        ? `${state.patient.name} · 차트번호 ${state.patient.chart_number}`
+        : "";
 }
 
 function renderEncounters() {
@@ -637,6 +650,7 @@ async function openEncounter(encounterId) {
     state.encounter = encounter;
     state.soap = soap;
     state.selectedCandidates = {};
+    $("#encounter-form").classList.add("hidden");
     $("#encounter-workspace").classList.remove("hidden");
     renderEncounterHeader();
     populateEncounterForm();
@@ -1031,6 +1045,10 @@ async function loadAdmin() {
     try {
         const [status, jobs] = await Promise.all([api("/api/admin/status"), api("/api/admin/index-jobs")]);
         $("#model-badge").textContent = `${status.ai.provider} · ${status.ai.model}`;
+        $("#admin-status-dot").classList.toggle("warning", !status.qdrant.ok);
+        $("#admin-tools-button").title = status.qdrant.ok
+            ? "관리 도구 · 의학 문서 인덱스 정상"
+            : "관리 도구 · 의학 문서 인덱스 확인 필요";
         $("#knowledge-summary").innerHTML = `
             PDF ${status.knowledge_files.length}개 · Chunk ${status.counts.kb_chunks}개<br>
             Qdrant ${status.qdrant.ok ? "정상" : "연결 안 됨"}
@@ -1040,6 +1058,36 @@ async function loadAdmin() {
         if (error.status !== 401) console.warn("Admin status unavailable", error);
     }
 }
+
+function openAdminDrawer() {
+    $("#admin-drawer").classList.add("open");
+    $("#admin-backdrop").classList.add("open");
+    $("#admin-drawer").setAttribute("aria-hidden", "false");
+    $("#admin-tools-button").setAttribute("aria-expanded", "true");
+    document.body.classList.add("drawer-open");
+    $("#admin-drawer-close").focus();
+}
+
+function closeAdminDrawer() {
+    const drawer = $("#admin-drawer");
+    const backdrop = $("#admin-backdrop");
+    if (!drawer || !backdrop) return;
+    drawer.classList.remove("open");
+    backdrop.classList.remove("open");
+    drawer.setAttribute("aria-hidden", "true");
+    $("#admin-tools-button")?.setAttribute("aria-expanded", "false");
+    document.body.classList.remove("drawer-open");
+}
+
+$("#admin-tools-button").addEventListener("click", openAdminDrawer);
+$("#admin-drawer-close").addEventListener("click", closeAdminDrawer);
+$("#admin-backdrop").addEventListener("click", closeAdminDrawer);
+document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && $("#admin-drawer").classList.contains("open")) {
+        closeAdminDrawer();
+        $("#admin-tools-button").focus();
+    }
+});
 
 function renderJobs(jobs) {
     $("#index-jobs").innerHTML = jobs.slice(0, 5).map((job) => {

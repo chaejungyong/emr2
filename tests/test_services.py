@@ -363,7 +363,7 @@ def test_encounter_create_requires_chief_complaint(monkeypatch):
     monkeypatch.setattr(
         clinical,
         "fetch_one",
-        lambda *_args, **_kwargs: {"id": "patient-id"},
+        lambda *_args, **_kwargs: {"id": "patient-id", "is_archived": False},
     )
 
     response = app.test_client().post(

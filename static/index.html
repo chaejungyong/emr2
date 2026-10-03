@@ -27,6 +27,10 @@
             <div class="topbar-actions">
                 <span id="model-badge" class="badge">AI 설정 확인 중</span>
                 <span id="user-name"></span>
+                <button id="admin-tools-button" type="button" class="topbar-tool" aria-controls="admin-drawer" aria-expanded="false">
+                    <span id="admin-status-dot" class="admin-status-dot" aria-hidden="true"></span>
+                    관리
+                </button>
                 <button id="logout-button" class="ghost">로그아웃</button>
             </div>
         </header>
@@ -146,11 +150,6 @@
                         <div class="form-actions"><button class="primary">S 초안 생성</button></div>
                     </form>
 
-                    <section class="panel">
-                        <div class="section-title"><div><p class="eyebrow">HISTORY</p><h2>진료 이력</h2></div></div>
-                        <div id="encounter-list" class="encounter-list"></div>
-                    </section>
-
                     <section id="encounter-workspace" class="hidden">
                         <div class="encounter-header panel">
                             <div><p id="encounter-date" class="eyebrow"></p><h2 id="encounter-title">진료 SOAP</h2><p id="encounter-summary" class="muted"></p></div>
@@ -167,7 +166,7 @@
                                 <span class="soap-chevron" aria-hidden="true"></span>
                             </button>
                             <form id="encounter-edit-form" class="form-grid">
-                                <label>질병 카테고리<select name="disease_id" id="encounter-edit-disease"><option value="">미선택</option></select></label>
+                                <label>질병 분류 (선택)<select name="disease_id" id="encounter-edit-disease"><option value="">미선택</option></select></label>
                                 <label>진료일시<input name="visit_at" type="datetime-local"></label>
                                 <label class="wide">주호소<textarea name="chief_complaint" rows="2"></textarea></label>
                                 <label class="wide">History<textarea name="history_text" rows="4"></textarea></label>
@@ -192,29 +191,57 @@
                 </div>
             </main>
 
-            <aside class="right-panel panel">
-                <section>
-                    <div class="panel-heading"><div><p class="eyebrow">DISEASES</p><h2>질병 분류</h2></div></div>
-                    <form id="disease-form" class="stack compact-form">
-                        <input name="name" placeholder="질병명" required>
-                        <input name="category" value="심장질환" placeholder="카테고리">
-                        <button class="secondary">추가</button>
-                    </form>
-                    <div id="disease-list" class="tag-list"></div>
+            <aside class="right-panel history-panel panel">
+                <section id="history-empty" class="history-empty">
+                    <div class="history-empty-icon">↗</div>
+                    <h2>환자 진료 이력</h2>
+                    <p class="muted small">왼쪽에서 환자를 선택하면 과거 진료가 여기에 표시됩니다.</p>
                 </section>
-                <hr>
-                <section>
-                    <div class="panel-heading"><div><p class="eyebrow">KNOWLEDGE</p><h2>의학 문서 인덱스</h2></div></div>
-                    <p class="muted small"><code>storage/knowledge/inbox</code>에 PDF를 넣은 뒤 실행하세요.</p>
-                    <div id="knowledge-summary" class="knowledge-summary"></div>
-                    <div class="field-row">
-                        <button id="incremental-index" class="secondary">증분 갱신</button>
-                        <button id="full-index" class="danger-ghost">전체 재색인</button>
+                <section id="history-content" class="hidden">
+                    <div class="panel-heading history-heading">
+                        <div>
+                            <p class="eyebrow">HISTORY</p>
+                            <h2>환자 진료 이력</h2>
+                            <p id="history-patient-name" class="muted small"></p>
+                        </div>
                     </div>
-                    <div id="index-jobs" class="job-list"></div>
+                    <div id="encounter-list" class="encounter-list"></div>
                 </section>
             </aside>
         </div>
+
+        <div id="admin-backdrop" class="admin-backdrop" aria-hidden="true"></div>
+        <aside id="admin-drawer" class="admin-drawer" aria-hidden="true" aria-labelledby="admin-drawer-title">
+            <div class="admin-drawer-header">
+                <div>
+                    <p class="eyebrow">ADMIN TOOLS</p>
+                    <h2 id="admin-drawer-title">관리 도구</h2>
+                </div>
+                <button id="admin-drawer-close" type="button" class="icon-button" aria-label="관리 도구 닫기">×</button>
+            </div>
+
+            <section class="admin-section">
+                <div class="panel-heading"><div><p class="eyebrow">DISEASES</p><h2>질병 분류</h2></div></div>
+                <p class="muted small">진료에서 선택할 질병 분류를 관리합니다.</p>
+                <form id="disease-form" class="stack compact-form">
+                    <input name="name" placeholder="질병명" required>
+                    <input name="category" value="심장질환" placeholder="카테고리">
+                    <button class="secondary">추가</button>
+                </form>
+                <div id="disease-list" class="tag-list"></div>
+            </section>
+
+            <section class="admin-section">
+                <div class="panel-heading"><div><p class="eyebrow">KNOWLEDGE</p><h2>의학 문서 인덱스</h2></div></div>
+                <p class="muted small"><code>storage/knowledge/inbox</code>에 PDF를 넣은 뒤 실행하세요.</p>
+                <div id="knowledge-summary" class="knowledge-summary"></div>
+                <div class="field-row">
+                    <button id="incremental-index" class="secondary">증분 갱신</button>
+                    <button id="full-index" class="danger-ghost">전체 재색인</button>
+                </div>
+                <div id="index-jobs" class="job-list"></div>
+            </section>
+        </aside>
     </div>
 
     <div id="toast-region" class="toast-region" aria-live="polite"></div>
