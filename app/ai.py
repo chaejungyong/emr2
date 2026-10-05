@@ -210,29 +210,81 @@ def parse_json(content):
 
 
 class EmbeddingClient:
-    def __init__(self, base_url, api_key, model, timeout=90):
+    def __init__(
+        self,
+        base_url,
+        api_key,
+        model,
+        timeout=90,
+        max_attempts=4,
+        backoff_seconds=1,
+    ):
         self.base_url = base_url
         self.api_key = api_key
         self.model = model
         self.timeout = timeout
+        self.max_attempts = max_attempts
+        self.backoff_seconds = backoff_seconds
+
+    @staticmethod
+    def _status_error_message(status_code):
+        if status_code in {401, 403}:
+            return (
+                "임베딩 API 인증에 실패했습니다. EMBEDDING_API_KEY를 확인하고 "
+                "web/worker 컨테이너를 다시 생성하세요."
+            )
+        if status_code == 429:
+            return "임베딩 API 요청 한도 또는 사용량 한도를 초과했습니다."
+        return f"임베딩 API 요청에 실패했습니다(HTTP {status_code})."
+
+    def _retry_delay(self, response, attempt):
+        retry_after = (
+            response.headers.get("retry-after") if response is not None else None
+        )
+        try:
+            if retry_after is not None:
+                return min(30.0, max(0.0, float(retry_after)))
+        except ValueError:
+            pass
+        return min(30.0, self.backoff_seconds * (2**attempt))
 
     def embed(self, texts):
         if not texts:
             return []
         if not self.api_key:
             raise AIServiceError("EMBEDDING_API_KEY가 설정되지 않았습니다.")
-        try:
-            response = httpx.post(
-                api_url(self.base_url, "/v1/embeddings"),
-                headers={"Authorization": f"Bearer {self.api_key}"},
-                json={"model": self.model, "input": texts},
-                timeout=self.timeout,
-            )
-            response.raise_for_status()
-            data = sorted(response.json()["data"], key=lambda item: item["index"])
-            vectors = [item["embedding"] for item in data]
-        except (httpx.HTTPError, KeyError, ValueError) as error:
-            raise AIServiceError(f"임베딩 응답을 처리하지 못했습니다: {error}") from error
+        for attempt in range(self.max_attempts):
+            try:
+                response = httpx.post(
+                    api_url(self.base_url, "/v1/embeddings"),
+                    headers={"Authorization": f"Bearer {self.api_key}"},
+                    json={"model": self.model, "input": texts},
+                    timeout=self.timeout,
+                )
+                response.raise_for_status()
+                data = sorted(response.json()["data"], key=lambda item: item["index"])
+                vectors = [item["embedding"] for item in data]
+                break
+            except httpx.HTTPStatusError as error:
+                status_code = error.response.status_code
+                retryable = status_code == 429 or status_code >= 500
+                if retryable and attempt + 1 < self.max_attempts:
+                    time.sleep(self._retry_delay(error.response, attempt))
+                    continue
+                raise AIServiceError(
+                    self._status_error_message(status_code)
+                ) from error
+            except httpx.RequestError as error:
+                if attempt + 1 < self.max_attempts:
+                    time.sleep(self._retry_delay(None, attempt))
+                    continue
+                raise AIServiceError(
+                    "임베딩 API에 연결하지 못했습니다. 잠시 후 다시 시도하세요."
+                ) from error
+            except (KeyError, ValueError) as error:
+                raise AIServiceError(
+                    "임베딩 API 응답 형식이 올바르지 않습니다."
+                ) from error
         if len(vectors) != len(texts) or not vectors or not vectors[0]:
             raise AIServiceError("임베딩 개수 또는 차원이 올바르지 않습니다.")
         return vectors
@@ -321,7 +373,7 @@ class QdrantStore:
         )
         self._request("POST", "/collections/aliases", json={"actions": actions})
 
-    def upsert(self, collection, points):
+    def upsert(self, collection, points, progress_callback=None):
         if not points:
             return
         for start in range(0, len(points), self.upsert_batch_size):
@@ -331,6 +383,8 @@ class QdrantStore:
                 f"/collections/{collection}/points?wait=true",
                 json={"points": batch},
             )
+            if progress_callback:
+                progress_callback(min(start + len(batch), len(points)), len(points))
 
     def delete_document_versions(self, collection, document_id, except_version_id=None):
         must = [{"key": "document_id", "match": {"value": document_id}}]
@@ -393,6 +447,8 @@ def get_embedding_client():
         current_app.config["EMBEDDING_API_KEY"],
         current_app.config["EMBEDDING_MODEL"],
         current_app.config["LLM_TIMEOUT_SECONDS"],
+        current_app.config["INDEX_HTTP_MAX_ATTEMPTS"],
+        current_app.config["INDEX_HTTP_BACKOFF_SECONDS"],
     )
 
 

@@ -182,6 +182,7 @@ h2 { margin-bottom: 0; font-size: 1.04rem; }
 .empty-state { min-height: 58vh; display: grid; place-content: center; justify-items: center; padding: 3rem; text-align: center; color: var(--muted); }
 .empty-icon { margin-bottom: 1rem; color: var(--teal); font-size: 3rem; }
 .patient-banner, .encounter-header { padding: 1.1rem 1.25rem; margin-bottom: 1rem; }
+.patient-banner { position: sticky; top: 0; z-index: 10; }
 .patient-banner p, .encounter-header p { margin-bottom: 0; }
 .patient-title-line { display: flex; align-items: center; flex-wrap: wrap; gap: .55rem; }
 .patient-title-line h1 { margin-bottom: .35rem; }
@@ -310,6 +311,9 @@ h2 { margin-bottom: 0; font-size: 1.04rem; }
 .job-list { display: grid; gap: .55rem; margin-top: .85rem; }
 .job { padding: .65rem; border: 1px solid var(--line); border-radius: 8px; font-size: .72rem; }
 .job progress { width: 100%; height: 6px; margin-top: .45rem; }
+.job-current { padding-top: .55rem; margin-top: .55rem; border-top: 1px dashed var(--line); color: var(--muted); line-height: 1.45; }
+.job-current-file { overflow: hidden; margin-bottom: .15rem; color: var(--ink); font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
+.job-current progress { height: 8px; }
 .admin-backdrop { position: fixed; inset: 64px 0 0; z-index: 29; visibility: hidden; background: rgba(12,31,28,.34); opacity: 0; transition: opacity .18s ease, visibility .18s ease; }
 .admin-backdrop.open { visibility: visible; opacity: 1; }
 .admin-drawer { position: fixed; top: 64px; right: 0; bottom: 0; z-index: 30; width: min(430px, calc(100vw - 2rem)); padding: 1.25rem; overflow-y: auto; background: var(--surface); box-shadow: -18px 0 42px rgba(17,45,40,.18); visibility: hidden; transform: translateX(105%); transition: transform .2s ease, visibility .2s ease; }
@@ -333,7 +337,7 @@ h2 { margin-bottom: 0; font-size: 1.04rem; }
     .left-panel, .right-panel, .main-panel { max-height: none; border: 0; }
     .left-panel { max-height: 45vh; }
     .history-panel .encounter-list { grid-template-columns: 1fr; }
-    .patient-banner { align-items: flex-start; flex-direction: column; }
+    .patient-banner { position: static; z-index: auto; align-items: flex-start; flex-direction: column; }
     .topbar-actions { gap: .45rem; }
     .topbar-tool { padding-inline: .65rem; }
     .objective-xrays > summary { align-items: flex-start; }

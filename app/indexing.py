@@ -10,7 +10,7 @@ from .ai import (
     get_embedding_client,
     get_vector_store,
 )
-from .db import execute, fetch_all, fetch_one, new_id, transaction
+from .db import connect, execute, fetch_all, fetch_one, new_id, transaction
 
 
 class IndexingError(RuntimeError):
@@ -57,12 +57,13 @@ def split_long_text(text, target=3200, overlap=400):
     return chunks
 
 
-def extract_pdf(path):
+def extract_pdf(path, progress_callback=None):
     try:
         if path.stat().st_size > current_app.config["MAX_PDF_BYTES"]:
             raise IndexingError("허용된 PDF 파일 크기를 초과했습니다.")
         reader = PdfReader(str(path), strict=False)
-        if len(reader.pages) > current_app.config["MAX_PDF_PAGES"]:
+        page_count = len(reader.pages)
+        if page_count > current_app.config["MAX_PDF_PAGES"]:
             raise IndexingError("허용된 PDF 페이지 수를 초과했습니다.")
         if reader.is_encrypted:
             try:
@@ -70,31 +71,40 @@ def extract_pdf(path):
             except Exception as error:
                 raise IndexingError("암호화된 PDF는 처리할 수 없습니다.") from error
         chunks = []
+        if progress_callback:
+            progress_callback(0, page_count)
         for page_number, page in enumerate(reader.pages, 1):
             try:
                 text = normalize_text(page.extract_text() or "")
             except Exception as error:
                 raise IndexingError(f"{page_number}쪽 텍스트 추출 실패: {error}") from error
-            if not text:
-                continue
-            heading = next(
-                (line.strip() for line in text.splitlines() if 3 <= len(line.strip()) <= 120),
-                None,
-            )
-            for page_chunk in split_long_text(text):
-                chunks.append(
-                    {
-                        "page_start": page_number,
-                        "page_end": page_number,
-                        "heading": heading,
-                        "content": page_chunk,
-                    }
+            if text:
+                heading = next(
+                    (
+                        line.strip()
+                        for line in text.splitlines()
+                        if 3 <= len(line.strip()) <= 120
+                    ),
+                    None,
                 )
+                for page_chunk in split_long_text(text):
+                    chunks.append(
+                        {
+                            "page_start": page_number,
+                            "page_end": page_number,
+                            "heading": heading,
+                            "content": page_chunk,
+                        }
+                    )
+            if progress_callback and (
+                page_number == page_count or page_number % 10 == 0
+            ):
+                progress_callback(page_number, page_count)
         if sum(len(chunk["content"]) for chunk in chunks) < 200:
             raise IndexingError(
                 "추출 가능한 텍스트가 없습니다. 스캔 PDF라면 OCR 처리 후 다시 시도하세요."
             )
-        return len(reader.pages), chunks
+        return page_count, chunks
     except IndexingError:
         raise
     except Exception as error:
@@ -118,13 +128,15 @@ def source_key(path):
     return path.relative_to(current_app.config["KNOWLEDGE_ROOT"]).as_posix()
 
 
-def embed_chunks(chunks):
+def embed_chunks(chunks, progress_callback=None):
     client = get_embedding_client()
     batch_size = current_app.config["EMBEDDING_BATCH_SIZE"]
     vectors = []
     for start in range(0, len(chunks), batch_size):
         batch = chunks[start : start + batch_size]
         vectors.extend(client.embed([chunk["content"] for chunk in batch]))
+        if progress_callback:
+            progress_callback(len(vectors), len(chunks))
     return vectors
 
 
@@ -155,9 +167,19 @@ def active_version(document_id):
     )
 
 
-def create_version(document, digest, file_size, page_count, chunks):
+def create_version(
+    document,
+    digest,
+    file_size,
+    page_count,
+    chunks,
+    progress_callback=None,
+):
     version_id = new_id()
     chunk_rows = []
+    chunk_total = len(chunks)
+    if progress_callback:
+        progress_callback(0, chunk_total)
     with transaction():
         execute(
             """
@@ -199,6 +221,11 @@ def create_version(document, digest, file_size, page_count, chunks):
                 ),
             )
             chunk_rows.append({"id": chunk_id, **chunk})
+            stored_count = index + 1
+            if progress_callback and (
+                stored_count == chunk_total or stored_count % 100 == 0
+            ):
+                progress_callback(stored_count, chunk_total)
     return version_id, chunk_rows
 
 
@@ -242,13 +269,15 @@ def set_item(job_id, key, status, chunk_count=0, error=None):
         execute(
             """
             UPDATE index_job_items
-            SET status = %s, chunk_count = %s, error_message = %s,
+            SET status = %s, progress_phase = %s,
+                chunk_count = %s, error_message = %s,
                 started_at = COALESCE(started_at, %s),
                 finished_at = CASE WHEN %s IN ('completed', 'skipped', 'failed')
                                    THEN %s ELSE finished_at END
             WHERE job_id = %s AND source_key = %s
             """,
             (
+                status,
                 status,
                 chunk_count,
                 str(error)[:2000] if error else None,
@@ -259,6 +288,28 @@ def set_item(job_id, key, status, chunk_count=0, error=None):
                 key,
             ),
         )
+
+
+def update_item_progress(job_id, key, phase, current=0, total=0):
+    # create_version() keeps the chunk inserts in one transaction. Use a separate
+    # short connection so progress remains visible without committing that work.
+    connection = connect()
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE index_job_items
+                SET progress_phase = %s, progress_current = %s, progress_total = %s
+                WHERE job_id = %s AND source_key = %s AND status = 'processing'
+                """,
+                (phase, max(0, current), max(0, total), job_id, key),
+            )
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
 
 
 def increment_job(job_id, column):
@@ -275,13 +326,22 @@ def increment_job(job_id, column):
 def prepare_job_items(job_id, files):
     with transaction():
         execute(
-            "UPDATE index_jobs SET total_files = %s WHERE id = %s",
+            """
+            UPDATE index_jobs
+            SET total_files = %s, processed_files = 0, skipped_files = 0,
+                failed_files = 0, error_message = NULL, finished_at = NULL
+            WHERE id = %s
+            """,
             (len(files), job_id),
         )
+        # A worker restart re-runs an unfinished job from the current inbox.
+        # Rebuild its item list so stale processing rows and counters cannot make
+        # the displayed progress exceed the number of files.
+        execute("DELETE FROM index_job_items WHERE job_id = %s", (job_id,))
         for path in files:
             execute(
                 """
-                INSERT IGNORE INTO index_job_items (id, job_id, source_key)
+                INSERT INTO index_job_items (id, job_id, source_key)
                 VALUES (%s, %s, %s)
                 """,
                 (new_id(), job_id, source_key(path)),
@@ -318,6 +378,7 @@ def index_incremental(job_id, files):
         set_item(job_id, key, "processing")
         version_id = None
         try:
+            update_item_progress(job_id, key, "hashing")
             digest = sha256_file(path)
             document = get_or_create_document(key, path.name)
             current = active_version(document["id"])
@@ -331,17 +392,43 @@ def index_incremental(job_id, files):
                 set_item(job_id, key, "skipped")
                 increment_job(job_id, "skipped_files")
                 continue
-            page_count, extracted = extract_pdf(path)
-            vectors = embed_chunks(extracted)
+            update_item_progress(job_id, key, "extracting")
+            page_count, extracted = extract_pdf(
+                path,
+                lambda current, total: update_item_progress(
+                    job_id, key, "extracting", current, total
+                ),
+            )
+            update_item_progress(job_id, key, "embedding", 0, len(extracted))
+            vectors = embed_chunks(
+                extracted,
+                lambda current, total: update_item_progress(
+                    job_id, key, "embedding", current, total
+                ),
+            )
+            update_item_progress(job_id, key, "storing", 0, len(extracted))
             version_id, chunks = create_version(
-                document, digest, path.stat().st_size, page_count, extracted
+                document,
+                digest,
+                path.stat().st_size,
+                page_count,
+                extracted,
+                lambda current, total: update_item_progress(
+                    job_id, key, "storing", current, total
+                ),
             )
             collection = store.ensure_active_collection(
                 len(vectors[0]), current_app.config["EMBEDDING_MODEL"]
             )
+            update_item_progress(job_id, key, "uploading", 0, len(chunks))
             store.upsert(
-                collection, points_for(document, version_id, chunks, vectors)
+                collection,
+                points_for(document, version_id, chunks, vectors),
+                lambda current, total: update_item_progress(
+                    job_id, key, "uploading", current, total
+                ),
             )
+            update_item_progress(job_id, key, "finalizing")
             with transaction():
                 execute(
                     "UPDATE kb_document_versions SET is_active = FALSE WHERE document_id = %s",
@@ -396,12 +483,33 @@ def index_full(job_id, files):
         set_item(job_id, key, "processing")
         version_id = None
         try:
+            update_item_progress(job_id, key, "hashing")
             digest = sha256_file(path)
             document = get_or_create_document(key, path.name)
-            page_count, extracted = extract_pdf(path)
-            vectors = embed_chunks(extracted)
+            update_item_progress(job_id, key, "extracting")
+            page_count, extracted = extract_pdf(
+                path,
+                lambda current, total: update_item_progress(
+                    job_id, key, "extracting", current, total
+                ),
+            )
+            update_item_progress(job_id, key, "embedding", 0, len(extracted))
+            vectors = embed_chunks(
+                extracted,
+                lambda current, total: update_item_progress(
+                    job_id, key, "embedding", current, total
+                ),
+            )
+            update_item_progress(job_id, key, "storing", 0, len(extracted))
             version_id, chunks = create_version(
-                document, digest, path.stat().st_size, page_count, extracted
+                document,
+                digest,
+                path.stat().st_size,
+                page_count,
+                extracted,
+                lambda current, total: update_item_progress(
+                    job_id, key, "storing", current, total
+                ),
             )
             if collection is None:
                 collection = collection_name_for_full(
@@ -415,7 +523,15 @@ def index_full(job_id, files):
                     )
             elif store.collection_dimension(collection) != len(vectors[0]):
                 raise IndexingError("문서 사이의 임베딩 차원이 다릅니다.")
-            store.upsert(collection, points_for(document, version_id, chunks, vectors))
+            update_item_progress(job_id, key, "uploading", 0, len(chunks))
+            store.upsert(
+                collection,
+                points_for(document, version_id, chunks, vectors),
+                lambda current, total: update_item_progress(
+                    job_id, key, "uploading", current, total
+                ),
+            )
+            update_item_progress(job_id, key, "finalizing")
             prepared.append((document, version_id))
             set_item(job_id, key, "completed", len(chunks))
             increment_job(job_id, "processed_files")

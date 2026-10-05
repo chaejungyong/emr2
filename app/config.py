@@ -50,6 +50,10 @@ class Config:
     EMBEDDING_API_KEY = os.environ.get("EMBEDDING_API_KEY", LLM_API_KEY)
     EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "text-embedding-3-small")
     EMBEDDING_BATCH_SIZE = int(os.environ.get("EMBEDDING_BATCH_SIZE", "32"))
+    INDEX_HTTP_MAX_ATTEMPTS = int(os.environ.get("INDEX_HTTP_MAX_ATTEMPTS", "4"))
+    INDEX_HTTP_BACKOFF_SECONDS = float(
+        os.environ.get("INDEX_HTTP_BACKOFF_SECONDS", "1")
+    )
 
     QDRANT_URL = os.environ.get("QDRANT_URL", "http://qdrant:6333").rstrip("/")
     QDRANT_ALIAS = os.environ.get("QDRANT_ALIAS", "kb_active")
@@ -66,3 +70,7 @@ class Config:
             raise RuntimeError("SECRET_KEY must be configured.")
         if cls.SOAP_CANDIDATE_COUNT < 1 or cls.SOAP_CANDIDATE_COUNT > 10:
             raise RuntimeError("SOAP_CANDIDATE_COUNT must be between 1 and 10.")
+        if cls.INDEX_HTTP_MAX_ATTEMPTS < 1 or cls.INDEX_HTTP_MAX_ATTEMPTS > 10:
+            raise RuntimeError("INDEX_HTTP_MAX_ATTEMPTS must be between 1 and 10.")
+        if cls.INDEX_HTTP_BACKOFF_SECONDS < 0:
+            raise RuntimeError("INDEX_HTTP_BACKOFF_SECONDS must not be negative.")

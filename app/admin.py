@@ -40,7 +40,29 @@ def status():
 @bp.get("/index-jobs")
 def list_index_jobs():
     jobs = fetch_all(
-        "SELECT * FROM index_jobs ORDER BY created_at DESC LIMIT 50"
+        """
+        SELECT j.*,
+               current_item.source_key AS current_source_key,
+               current_item.progress_phase,
+               current_item.progress_current,
+               current_item.progress_total,
+               (
+                   SELECT i.source_key
+                   FROM index_job_items i
+                   WHERE i.job_id = j.id AND i.status = 'failed'
+                   ORDER BY i.source_key LIMIT 1
+               ) AS failed_source_key,
+               (
+                   SELECT i.error_message
+                   FROM index_job_items i
+                   WHERE i.job_id = j.id AND i.status = 'failed'
+                   ORDER BY i.source_key LIMIT 1
+               ) AS item_error_message
+        FROM index_jobs j
+        LEFT JOIN index_job_items current_item
+          ON current_item.job_id = j.id AND current_item.status = 'processing'
+        ORDER BY j.created_at DESC LIMIT 50
+        """
     )
     return jsonify({"items": jobs})
 

@@ -6,10 +6,26 @@ import pytest
 from flask import Flask
 from PIL import Image
 
-from app.ai import MockLLM, OpenAICompatibleLLM, QdrantStore, api_url, parse_json
+from app.ai import (
+    AIServiceError,
+    EmbeddingClient,
+    MockLLM,
+    OpenAICompatibleLLM,
+    QdrantStore,
+    api_url,
+    parse_json,
+)
 from app.auth import install_guards
 from app.clinical import affected_soap_stages, detect_image, xray_context_signature
-from app.indexing import normalize_text, split_long_text
+from app.indexing import (
+    IndexingError,
+    create_version,
+    embed_chunks,
+    extract_pdf,
+    normalize_text,
+    split_long_text,
+    update_item_progress,
+)
 from app.soap import build_context, stage_is_unlocked
 
 
@@ -55,6 +71,162 @@ def test_qdrant_active_collection_uses_alias_list(monkeypatch):
     monkeypatch.setattr(store, "_request", fake_request)
     assert store.active_collection() == "current"
     assert called == {"method": "GET", "path": "/aliases"}
+
+
+def test_qdrant_upsert_reports_batch_progress(monkeypatch):
+    store = QdrantStore(
+        "http://qdrant:6333",
+        "kb_active",
+        upsert_batch_size=2,
+    )
+    requests = []
+    progress = []
+    monkeypatch.setattr(
+        store,
+        "_request",
+        lambda method, path, **kwargs: requests.append((method, path, kwargs)),
+    )
+
+    store.upsert(
+        "collection",
+        [{"id": str(index)} for index in range(5)],
+        lambda current, total: progress.append((current, total)),
+    )
+
+    assert len(requests) == 3
+    assert progress == [(2, 5), (4, 5), (5, 5)]
+
+
+def test_pdf_extraction_reports_progress_for_pages_without_text(
+    monkeypatch, tmp_path
+):
+    class EmptyPage:
+        @staticmethod
+        def extract_text():
+            return ""
+
+    class Reader:
+        pages = [EmptyPage(), EmptyPage(), EmptyPage()]
+        is_encrypted = False
+
+    pdf_path = tmp_path / "empty.pdf"
+    pdf_path.write_bytes(b"%PDF-test")
+    monkeypatch.setattr("app.indexing.PdfReader", lambda *_args, **_kwargs: Reader())
+    progress = []
+    app = Flask(__name__)
+    app.config["MAX_PDF_BYTES"] = 1024
+    app.config["MAX_PDF_PAGES"] = 10
+
+    with app.app_context(), pytest.raises(IndexingError, match="추출 가능한 텍스트"):
+        extract_pdf(
+            pdf_path,
+            lambda current, total: progress.append((current, total)),
+        )
+
+    assert progress == [(0, 3), (3, 3)]
+
+
+def test_embedding_reports_batch_progress(monkeypatch):
+    class EmbeddingStub:
+        @staticmethod
+        def embed(texts):
+            return [[float(len(text))] for text in texts]
+
+    monkeypatch.setattr("app.indexing.get_embedding_client", EmbeddingStub)
+    progress = []
+    app = Flask(__name__)
+    app.config["EMBEDDING_BATCH_SIZE"] = 2
+
+    with app.app_context():
+        vectors = embed_chunks(
+            [{"content": f"chunk {index}"} for index in range(5)],
+            lambda current, total: progress.append((current, total)),
+        )
+
+    assert len(vectors) == 5
+    assert progress == [(2, 5), (4, 5), (5, 5)]
+
+
+def test_chunk_storage_reports_batched_progress(monkeypatch):
+    generated_ids = iter(f"id-{index}" for index in range(300))
+    monkeypatch.setattr("app.indexing.new_id", lambda: next(generated_ids))
+    monkeypatch.setattr("app.indexing.execute", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("app.indexing.transaction", nullcontext)
+    chunks = [
+        {
+            "page_start": 1,
+            "page_end": 1,
+            "heading": None,
+            "content": f"chunk {index}",
+        }
+        for index in range(205)
+    ]
+    progress = []
+    app = Flask(__name__)
+    app.config.update(EMBEDDING_MODEL="model", CHUNKER_VERSION="chunker")
+
+    with app.app_context():
+        version_id, rows = create_version(
+            {"id": "document-1"},
+            "digest",
+            123,
+            1,
+            chunks,
+            lambda current, total: progress.append((current, total)),
+        )
+
+    assert version_id == "id-0"
+    assert len(rows) == 205
+    assert progress == [(0, 205), (100, 205), (200, 205), (205, 205)]
+
+
+def test_item_progress_is_committed_on_a_short_connection(monkeypatch):
+    executed = {}
+
+    class Cursor:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        @staticmethod
+        def execute(sql, params):
+            executed.update(sql=sql, params=params)
+
+    class Connection:
+        committed = False
+        rolled_back = False
+        closed = False
+
+        @staticmethod
+        def cursor():
+            return Cursor()
+
+        def commit(self):
+            self.committed = True
+
+        def rollback(self):
+            self.rolled_back = True
+
+        def close(self):
+            self.closed = True
+
+    connection = Connection()
+    monkeypatch.setattr("app.indexing.connect", lambda: connection)
+
+    update_item_progress("job-1", "inbox/book.pdf", "extracting", 20, 100)
+
+    assert executed["params"] == (
+        "extracting",
+        20,
+        100,
+        "job-1",
+        "inbox/book.pdf",
+    )
+    assert connection.committed
+    assert not connection.rolled_back
+    assert connection.closed
 
 
 def test_openai_adapter_validates_candidate_count(monkeypatch):
@@ -120,6 +292,107 @@ def test_openai_adapter_translates_evidence_to_korean(monkeypatch):
     )
     assert translations == {"chunk-1": "심장 비대", "chunk-2": "폐부종"}
     assert usage["completion_tokens"] == 8
+
+
+def test_embedding_client_explains_invalid_api_key_without_retry(monkeypatch):
+    calls = []
+
+    def fake_post(*_args, **_kwargs):
+        calls.append(True)
+        return __import__("httpx").Response(
+            401,
+            request=__import__("httpx").Request("POST", "https://example.test"),
+        )
+
+    monkeypatch.setattr("app.ai.httpx.post", fake_post)
+    client = EmbeddingClient("https://example.test", "bad-key", "model")
+    with pytest.raises(AIServiceError, match="EMBEDDING_API_KEY"):
+        client.embed(["text"])
+    assert len(calls) == 1
+
+
+def test_embedding_client_retries_rate_limit(monkeypatch):
+    import httpx
+
+    responses = [
+        httpx.Response(
+            429,
+            headers={"retry-after": "0"},
+            request=httpx.Request("POST", "https://example.test"),
+        ),
+        httpx.Response(
+            200,
+            json={"data": [{"index": 0, "embedding": [0.25, 0.75]}]},
+            request=httpx.Request("POST", "https://example.test"),
+        ),
+    ]
+    delays = []
+    monkeypatch.setattr("app.ai.httpx.post", lambda *_args, **_kwargs: responses.pop(0))
+    monkeypatch.setattr("app.ai.time.sleep", delays.append)
+    client = EmbeddingClient("https://example.test", "key", "model")
+    assert client.embed(["text"]) == [[0.25, 0.75]]
+    assert delays == [0.0]
+
+
+def test_embedding_client_retries_server_error(monkeypatch):
+    import httpx
+
+    responses = [
+        httpx.Response(
+            503,
+            request=httpx.Request("POST", "https://example.test"),
+        ),
+        httpx.Response(
+            200,
+            json={"data": [{"index": 0, "embedding": [0.25, 0.75]}]},
+            request=httpx.Request("POST", "https://example.test"),
+        ),
+    ]
+    delays = []
+    monkeypatch.setattr("app.ai.httpx.post", lambda *_args, **_kwargs: responses.pop(0))
+    monkeypatch.setattr("app.ai.time.sleep", delays.append)
+    client = EmbeddingClient(
+        "https://example.test",
+        "key",
+        "model",
+        max_attempts=2,
+        backoff_seconds=0.5,
+    )
+    assert client.embed(["text"]) == [[0.25, 0.75]]
+    assert delays == [0.5]
+
+
+def test_embedding_client_retries_connection_error(monkeypatch):
+    import httpx
+
+    calls = []
+
+    def fake_post(*_args, **_kwargs):
+        calls.append(True)
+        if len(calls) == 1:
+            raise httpx.ConnectError(
+                "temporary connection failure",
+                request=httpx.Request("POST", "https://example.test"),
+            )
+        return httpx.Response(
+            200,
+            json={"data": [{"index": 0, "embedding": [0.25, 0.75]}]},
+            request=httpx.Request("POST", "https://example.test"),
+        )
+
+    delays = []
+    monkeypatch.setattr("app.ai.httpx.post", fake_post)
+    monkeypatch.setattr("app.ai.time.sleep", delays.append)
+    client = EmbeddingClient(
+        "https://example.test",
+        "key",
+        "model",
+        max_attempts=2,
+        backoff_seconds=0.5,
+    )
+    assert client.embed(["text"]) == [[0.25, 0.75]]
+    assert len(calls) == 2
+    assert delays == [0.5]
 
 
 def test_chunker_is_deterministic_and_preserves_text():

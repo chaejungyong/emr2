@@ -1090,13 +1090,47 @@ document.addEventListener("keydown", (event) => {
 });
 
 function renderJobs(jobs) {
+    const phaseLabels = {
+        hashing: "파일 확인",
+        extracting: "PDF 텍스트 추출",
+        embedding: "임베딩 생성",
+        storing: "청크 저장",
+        uploading: "Qdrant 저장",
+        finalizing: "마무리",
+    };
+    const statusLabels = {
+        queued: "대기 중",
+        running: "진행 중",
+        completed: "완료",
+        failed: "실패",
+    };
     $("#index-jobs").innerHTML = jobs.slice(0, 5).map((job) => {
         const done = job.processed_files + job.skipped_files + job.failed_files;
         const max = Math.max(job.total_files, 1);
-        return `<div class="job"><strong>${job.job_type === "full" ? "전체" : "증분"} · ${escapeHtml(job.status)}</strong>
+        const phase = job.progress_phase || "pending";
+        const progressCurrent = Math.max(0, Number(job.progress_current) || 0);
+        const progressTotal = Math.max(0, Number(job.progress_total) || 0);
+        const boundedCurrent = progressTotal
+            ? Math.min(progressCurrent, progressTotal)
+            : progressCurrent;
+        const progressUnit = phase === "extracting" ? "페이지" : "청크";
+        const progressPercent = progressTotal
+            ? Math.floor((boundedCurrent / progressTotal) * 100)
+            : null;
+        const currentProgress = job.status === "running" ? `
+            <div class="job-current">
+                <div class="job-current-file">${job.current_source_key ? escapeHtml(job.current_source_key) : "작업 준비 중"}</div>
+                <div>${escapeHtml(phaseLabels[phase] || "처리 중")}${progressTotal ? ` · ${boundedCurrent}/${progressTotal} ${progressUnit} (${progressPercent}%)` : ""}</div>
+                ${progressTotal
+                    ? `<progress value="${boundedCurrent}" max="${progressTotal}" aria-label="현재 파일 진행률"></progress>`
+                    : '<progress aria-label="현재 파일 처리 중"></progress>'}
+            </div>` : "";
+        return `<div class="job"><strong>${job.job_type === "full" ? "전체" : "증분"} · ${escapeHtml(statusLabels[job.status] || job.status)}</strong>
             <div>${done}/${job.total_files} 파일${job.failed_files ? ` · 실패 ${job.failed_files}` : ""}</div>
-            <progress value="${done}" max="${max}"></progress>
+            <progress value="${Math.min(done, max)}" max="${max}" aria-label="전체 파일 진행률"></progress>
+            ${currentProgress}
             ${job.error_message ? `<div class="error">${escapeHtml(job.error_message)}</div>` : ""}
+            ${job.item_error_message ? `<div class="error">${job.failed_source_key ? `${escapeHtml(job.failed_source_key)}: ` : ""}${escapeHtml(job.item_error_message)}</div>` : ""}
         </div>`;
     }).join("");
 }
