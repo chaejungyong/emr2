@@ -8,6 +8,7 @@ htmlcov/
 .venv/
 venv/
 .DS_Store
+@eaDir/
 .vscode/
 .idea/
 *.log
