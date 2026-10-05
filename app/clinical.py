@@ -232,9 +232,15 @@ def get_patient(patient_id):
         return jsonify({"error": "patient_not_found"}), 404
     encounters = fetch_all(
         """
-        SELECT e.*, d.name AS disease_name
+        SELECT e.*, d.name AS disease_name,
+               assessment.diagnosis_name AS assessment_diagnosis_name
         FROM encounters e
         LEFT JOIN diseases d ON d.id = e.disease_id
+        LEFT JOIN soap_documents sd ON sd.encounter_id = e.id
+        LEFT JOIN soap_sections assessment
+               ON assessment.soap_document_id = sd.id
+              AND assessment.stage = 'A'
+              AND assessment.status = 'confirmed'
         WHERE e.patient_id = %s
         ORDER BY e.visit_at DESC
         """,
@@ -393,10 +399,16 @@ def list_encounters():
         where, params = "WHERE e.patient_id = %s", [patient_id]
     rows = fetch_all(
         f"""
-        SELECT e.*, p.name AS patient_name, p.chart_number, d.name AS disease_name
+        SELECT e.*, p.name AS patient_name, p.chart_number, d.name AS disease_name,
+               assessment.diagnosis_name AS assessment_diagnosis_name
         FROM encounters e
         JOIN patients p ON p.id = e.patient_id
         LEFT JOIN diseases d ON d.id = e.disease_id
+        LEFT JOIN soap_documents sd ON sd.encounter_id = e.id
+        LEFT JOIN soap_sections assessment
+               ON assessment.soap_document_id = sd.id
+              AND assessment.stage = 'A'
+              AND assessment.status = 'confirmed'
         {where}
         ORDER BY e.visit_at DESC
         LIMIT 300
@@ -457,10 +469,16 @@ def get_encounter(encounter_id):
         """
         SELECT e.*, p.name AS patient_name, p.chart_number, p.species, p.breed,
                p.sex, p.neutered, p.birth_date, p.weight_kg,
-               d.name AS disease_name, d.category AS disease_category
+               d.name AS disease_name, d.category AS disease_category,
+               assessment.diagnosis_name AS assessment_diagnosis_name
         FROM encounters e
         JOIN patients p ON p.id = e.patient_id
         LEFT JOIN diseases d ON d.id = e.disease_id
+        LEFT JOIN soap_documents sd ON sd.encounter_id = e.id
+        LEFT JOIN soap_sections assessment
+               ON assessment.soap_document_id = sd.id
+              AND assessment.stage = 'A'
+              AND assessment.status = 'confirmed'
         WHERE e.id = %s
         """,
         (encounter_id,),

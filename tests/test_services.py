@@ -26,7 +26,7 @@ from app.indexing import (
     split_long_text,
     update_item_progress,
 )
-from app.soap import build_context, stage_is_unlocked
+from app.soap import build_context, stage_is_unlocked, validate_diagnosis_name
 
 
 def test_api_url_accepts_root_or_v1_base():
@@ -477,10 +477,14 @@ def test_xray_readings_are_excluded_from_s_context(monkeypatch):
         stage: {"status": "confirmed", "current_text": stage}
         for stage in ("S", "O", "A", "P")
     }
+    sections["A"]["diagnosis_name"] = "승모판 폐쇄부전증"
     s_context, _ = build_context("encounter-1", "S", sections)
     o_context, _ = build_context("encounter-1", "O", sections)
+    p_context, p_query = build_context("encounter-1", "P", sections)
     assert s_context["xray_readings"] == []
     assert o_context["xray_readings"] == xray_rows
+    assert p_context["confirmed_diagnosis_name"] == "승모판 폐쇄부전증"
+    assert "승모판 폐쇄부전증" in p_query
 
 
 def test_stage_order_requires_all_previous_sections_confirmed():
@@ -493,6 +497,15 @@ def test_stage_order_requires_all_previous_sections_confirmed():
     assert stage_is_unlocked("S", sections)
     assert stage_is_unlocked("A", sections)
     assert not stage_is_unlocked("P", sections)
+
+
+def test_assessment_diagnosis_name_is_required_and_normalized():
+    assert validate_diagnosis_name("A", "  승모판 폐쇄부전증  ") == "승모판 폐쇄부전증"
+    assert validate_diagnosis_name("S", None) is None
+    with pytest.raises(ValueError, match="diagnosis_name_required"):
+        validate_diagnosis_name("A", "  ")
+    with pytest.raises(ValueError, match="diagnosis_name_too_long"):
+        validate_diagnosis_name("A", "진" * 256)
 
 
 def test_api_guard_requires_session_and_csrf():

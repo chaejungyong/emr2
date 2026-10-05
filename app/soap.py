@@ -24,6 +24,19 @@ def normalize_stage(stage):
     return value if value in STAGES else None
 
 
+def validate_diagnosis_name(stage, value):
+    if stage != "A":
+        return None
+    if not isinstance(value, str):
+        raise ValueError("diagnosis_name_required")
+    diagnosis_name = value.strip()
+    if not diagnosis_name:
+        raise ValueError("diagnosis_name_required")
+    if len(diagnosis_name) > 255:
+        raise ValueError("diagnosis_name_too_long")
+    return diagnosis_name
+
+
 def ensure_document(encounter_id):
     encounter = fetch_one("SELECT id FROM encounters WHERE id = %s", (encounter_id,))
     if not encounter:
@@ -95,7 +108,7 @@ def build_context(encounter_id, stage, sections):
     prior_rows = fetch_all(
         """
         SELECT e.id AS encounter_id, e.visit_at, d.name AS disease_name,
-               ss.stage, ss.current_text
+               ss.stage, ss.current_text, ss.diagnosis_name
         FROM encounters e
         JOIN soap_documents sd ON sd.encounter_id = e.id
         JOIN soap_sections ss ON ss.soap_document_id = sd.id
@@ -123,11 +136,16 @@ def build_context(encounter_id, stage, sections):
             }
             prior_notes.append(note)
         note["sections"][row["stage"]] = row["current_text"]
+        if row["stage"] == "A" and row.get("diagnosis_name"):
+            note["diagnosis_name"] = row["diagnosis_name"]
     confirmed = {
         item: sections[item]["current_text"]
         for item in previous_stages(stage)
         if sections[item]["current_text"]
     }
+    confirmed_diagnosis_name = None
+    if stage == "P" and sections["A"]["status"] == "confirmed":
+        confirmed_diagnosis_name = sections["A"].get("diagnosis_name")
     context = {
         "patient": {
             key: encounter[key]
@@ -156,6 +174,7 @@ def build_context(encounter_id, stage, sections):
         },
         "xray_readings": xrays,
         "confirmed_soap": confirmed,
+        "confirmed_diagnosis_name": confirmed_diagnosis_name,
         "prior_confirmed_soap": prior_notes,
         "medical_evidence": [],
     }
@@ -164,6 +183,7 @@ def build_context(encounter_id, stage, sections):
         str(encounter.get("chief_complaint") or ""),
         str(encounter.get("history_text") or ""),
         " ".join(str(value or "") for value in confirmed.values()),
+        str(confirmed_diagnosis_name or ""),
         f"SOAP {stage}",
     ]
     return context, " ".join(part for part in query_parts if part).strip()
@@ -424,6 +444,15 @@ def confirm_section(encounter_id, stage):
         return jsonify({"error": "content_required"}), 400
     if len(content) > 60000:
         return jsonify({"error": "content_too_long"}), 400
+    try:
+        diagnosis_name = validate_diagnosis_name(stage, payload.get("diagnosis_name"))
+    except ValueError as error:
+        message = (
+            "진단명은 255자 이내로 입력하세요."
+            if str(error) == "diagnosis_name_too_long"
+            else "진단명을 입력하세요."
+        )
+        return jsonify({"error": str(error), "message": message}), 400
     if candidate_id:
         candidate = fetch_one(
             """
@@ -460,18 +489,27 @@ def confirm_section(encounter_id, stage):
         execute(
             """
             INSERT INTO soap_section_revisions
-                (id, section_id, revision_no, source_candidate_id, content)
-            VALUES (%s, %s, %s, %s, %s)
+                (id, section_id, revision_no, source_candidate_id, content,
+                 diagnosis_name)
+            VALUES (%s, %s, %s, %s, %s, %s)
             """,
-            (new_id(), section["id"], revision, candidate_id, content),
+            (
+                new_id(),
+                section["id"],
+                revision,
+                candidate_id,
+                content,
+                diagnosis_name,
+            ),
         )
         execute(
             """
             UPDATE soap_sections
-            SET status = 'confirmed', current_text = %s, confirmed_at = %s
+            SET status = 'confirmed', current_text = %s, diagnosis_name = %s,
+                confirmed_at = %s
             WHERE id = %s
             """,
-            (content, datetime.utcnow(), section["id"]),
+            (content, diagnosis_name, datetime.utcnow(), section["id"]),
         )
         if later:
             placeholders = ", ".join(["%s"] * len(later))

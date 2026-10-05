@@ -582,13 +582,18 @@ function syncHistoryPanel() {
 function renderEncounters() {
     const root = $("#encounter-list");
     const encounters = state.patient?.encounters || [];
-    root.innerHTML = encounters.length ? encounters.map((encounter) => `
+    root.innerHTML = encounters.length ? encounters.map((encounter) => {
+        const diagnosisName = encounter.assessment_diagnosis_name || "진단명 미입력";
+        return `
         <div class="encounter-card ${state.encounter?.id === encounter.id ? "active" : ""}" data-encounter="${encounter.id}">
-            <time>${escapeHtml(formatDate(encounter.visit_at))}</time>
-            <div><strong>${escapeHtml(encounter.disease_name || "질병 미분류")}</strong><div class="muted small">${escapeHtml(encounter.chief_complaint || "주호소 없음")}</div></div>
+            <div>
+                <div class="encounter-history-title"><time>${escapeHtml(formatDate(encounter.visit_at))}</time><span aria-hidden="true">·</span><strong title="${escapeHtml(diagnosisName)}">${escapeHtml(diagnosisName)}</strong></div>
+                <div class="muted small">${escapeHtml(encounter.chief_complaint || "주호소 없음")}</div>
+            </div>
             <span class="status ${encounter.status}">${encounter.status === "completed" ? "완료" : "작성 중"}</span>
         </div>
-    `).join("") : `<p class="muted small">진료 이력이 없습니다. 새 진료를 생성하세요.</p>`;
+    `;
+    }).join("") : `<p class="muted small">진료 이력이 없습니다. 새 진료를 생성하세요.</p>`;
     $$("[data-encounter]", root).forEach((node) => node.addEventListener("click", () => openEncounter(node.dataset.encounter)));
 }
 
@@ -701,7 +706,10 @@ $("#encounter-details-toggle").addEventListener("click", () => {
 function reflectEncounterStatus() {
     if (!state.encounter) return;
     const cached = state.patient?.encounters?.find((item) => item.id === state.encounter.id);
-    if (cached) cached.status = state.encounter.status;
+    if (cached) {
+        cached.status = state.encounter.status;
+        cached.assessment_diagnosis_name = state.encounter.assessment_diagnosis_name;
+    }
     $("#encounter-status").textContent = state.encounter.status === "completed" ? "SOAP 완료" : "작성 중";
     $("#encounter-status").className = `status ${state.encounter.status}`;
 }
@@ -869,7 +877,18 @@ function bindXrayControls(step) {
     }));
 }
 
-const stageNames = {S: "주관적 정보", O: "객관적 정보", A: "평가", P: "계획"};
+const stageNames = {
+    S: "Subjective Evaluation",
+    O: "Objective Evaluation",
+    A: "Assessment",
+    P: "Plan",
+};
+const stageStatusNames = {
+    pending: "대기",
+    generated: "초안",
+    confirmed: "확정",
+    stale: "재확인",
+};
 
 function evidenceHtml(items = []) {
     if (!items.length) return "";
@@ -910,7 +929,7 @@ async function generateSoapStage(stage) {
     reflectEncounterStatus();
     renderEncounters();
     renderSoap();
-    toast(`${stage} AI 초안을 작성했습니다.`);
+    toast("AI 초안을 생성했습니다.");
 }
 
 function renderSoap() {
@@ -930,8 +949,8 @@ function renderSoap() {
             </div>
         `).join("");
         const notebookLabel = {
-            A: "NotebookLM 감별진단",
-            P: "NotebookLM 프로토콜",
+            A: "감별진단 참고",
+            P: "진료계획 참고",
         }[section.stage];
         const notebookLink = notebookLabel && section.unlocked ? `
             <a
@@ -945,15 +964,14 @@ function renderSoap() {
         return `
             <article class="soap-step ${expanded ? "expanded" : "collapsed"} ${section.unlocked ? "" : "locked"} ${section.stage === "O" ? "objective-step" : ""}" data-stage="${section.stage}">
                 <button type="button" class="soap-step-header" aria-expanded="${expanded}">
-                    <span class="stage-letter">${section.stage}</span>
-                    <strong>${stageNames[section.stage]}</strong>
+                    <strong class="stage-label">${stageNames[section.stage]}</strong>
                     ${preview ? `<span class="soap-preview">${escapeHtml(preview)}</span>` : ""}
-                    <span class="status ${section.status === "confirmed" ? "completed" : ""}">${escapeHtml(section.status)}</span>
+                    <span class="status ${section.status === "confirmed" ? "completed" : ""}">${escapeHtml(stageStatusNames[section.status] || section.status)}</span>
                     <span class="soap-chevron" aria-hidden="true"></span>
                 </button>
                 <div class="soap-step-body">
-                    ${!section.unlocked ? `<p class="muted small">이전 단계를 확정하면 활성화됩니다.</p>` : ""}
-                    ${stale ? `<p class="stale-note">관련 입력 정보가 수정되어 재검토가 필요합니다.</p>` : ""}
+                    ${!section.unlocked ? `<p class="muted small">이전 단계를 확정하면 작성할 수 있습니다.</p>` : ""}
+                    ${stale ? `<p class="stale-note">진료 정보가 변경되었습니다. 기록을 다시 확인해 주세요.</p>` : ""}
                     ${section.stage === "O" ? `
                         <label>신체검사/기초 소견
                             <textarea class="objective-source" rows="4" placeholder="청진, 호흡수, 심박수, 활력징후 등">${escapeHtml(state.encounter?.physical_exam || "")}</textarea>
@@ -961,17 +979,22 @@ function renderSoap() {
                         ${xrayPanelHtml()}
                     ` : ""}
                     <div class="soap-stage-actions">
-                        <button class="secondary generate" ${section.unlocked ? "" : "disabled"}>${section.candidates.length ? "AI 초안 다시 작성" : `${section.stage} 초안 작성`}</button>
+                        <button class="secondary generate" ${section.unlocked ? "" : "disabled"}>${section.candidates.length ? "AI 초안 재생성" : "AI 초안 생성"}</button>
                         ${notebookLink}
                     </div>
                     ${section.candidates.length ? `
                         <details class="candidates-fold" ${candidatesOpen ? "open" : ""}>
-                            <summary>AI 작성 초안 ${section.candidates.length}개</summary>
+                            <summary>AI 초안 ${section.candidates.length}개</summary>
                             <div class="candidates">${candidates}</div>
                         </details>
                     ` : ""}
-                    <label>확정할 내용<textarea class="soap-editor" rows="6" ${section.unlocked ? "" : "disabled"}>${escapeHtml(current)}</textarea></label>
-                    <button class="primary confirm" ${section.unlocked ? "" : "disabled"}>수정 내용 확정</button>
+                    ${section.stage === "A" ? `
+                        <label>진단명
+                            <input class="assessment-diagnosis" maxlength="255" placeholder="진단명을 입력하세요." value="${escapeHtml(section.diagnosis_name || "")}" ${section.unlocked ? "" : "disabled"}>
+                        </label>
+                    ` : ""}
+                    <label>SOAP 기록<textarea class="soap-editor" rows="6" ${section.unlocked ? "" : "disabled"}>${escapeHtml(current)}</textarea></label>
+                    <button class="primary confirm" ${section.unlocked ? "" : "disabled"}>기록 확정</button>
                 </div>
             </article>
         `;
@@ -999,7 +1022,7 @@ function bindSoapStep(step) {
                 if (!physicalExam) {
                     toast("신체검사/기초 소견을 입력하세요.", "error");
                     button.disabled = false;
-                    button.textContent = "O 초안 생성";
+                    button.textContent = "AI 초안 생성";
                     return;
                 }
                 if (physicalExam !== String(state.encounter.physical_exam || "").trim()) {
@@ -1024,18 +1047,24 @@ function bindSoapStep(step) {
     $(".confirm", step).addEventListener("click", async (event) => {
         const button = event.currentTarget;
         const content = $(".soap-editor", step).value.trim();
-        if (!content) return toast("확정할 내용을 입력하세요.", "error");
+        if (!content) return toast("SOAP 기록을 입력하세요.", "error");
+        const diagnosisName = stage === "A" ? $(".assessment-diagnosis", step).value.trim() : null;
+        if (stage === "A" && !diagnosisName) return toast("진단명을 입력하세요.", "error");
         button.disabled = true;
         try {
             state.soap = await api(`/api/encounters/${state.encounter.id}/soap/${stage}/confirm`, {
                 method: "PUT",
-                body: {content, candidate_id: state.selectedCandidates[stage] || null},
+                body: {
+                    content,
+                    candidate_id: state.selectedCandidates[stage] || null,
+                    ...(stage === "A" ? {diagnosis_name: diagnosisName} : {}),
+                },
             });
             state.encounter = await api(`/api/encounters/${state.encounter.id}`);
             reflectEncounterStatus();
             renderSoap();
             renderEncounters();
-            toast(`${stage} 단계를 확정했습니다.`);
+            toast(`${stageNames[stage]} 기록을 확정했습니다.`);
         } catch (error) { handleError(error); button.disabled = false; }
     });
 }
