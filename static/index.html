@@ -4,15 +4,15 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="color-scheme" content="light">
-    <title>CardioSOAP Vet</title>
+    <title>SOAP AI VetEMR</title>
     <link rel="stylesheet" href="/static/css/app.css">
 </head>
 <body>
     <section id="login-view" class="login-view">
         <form id="login-form" class="login-card">
-            <div class="brand-mark">CS</div>
+            <div class="brand-mark">AI</div>
             <p class="eyebrow">VETERINARY CARDIOLOGY</p>
-            <h1>CardioSOAP Vet</h1>
+            <h1>SOAP AI VetEMR</h1>
             <p class="muted">심장 진료 기록을 근거와 함께 단계적으로 작성합니다.</p>
             <label>사용자명<input name="username" autocomplete="username" required></label>
             <label>비밀번호<input name="password" type="password" autocomplete="current-password" required></label>
@@ -23,7 +23,7 @@
 
     <div id="app-view" class="app-view hidden">
         <header class="topbar">
-            <div class="brand-inline"><span>CS</span><strong>CardioSOAP Vet</strong></div>
+            <div class="brand-inline"><span>AI</span><strong>SOAP AI VetEMR</strong></div>
             <div class="topbar-actions">
                 <span id="model-badge" class="badge">AI 설정 확인 중</span>
                 <span id="user-name"></span>
@@ -125,6 +125,7 @@
                             <h2>환자 정보 수정</h2>
                             <button id="cancel-patient-contact" type="button" class="ghost">닫기</button>
                         </div>
+                        <label>환자 이름<input name="name" class="korean-input" lang="ko" inputmode="text" autocomplete="off" autocapitalize="off" maxlength="120" required></label>
                         <label>보호자<input name="owner_name" class="korean-input" lang="ko" inputmode="text" autocomplete="name" autocapitalize="off" required></label>
                         <label>핸드폰<input name="owner_phone" type="tel" inputmode="numeric" maxlength="13" pattern="010-[0-9]{4}-[0-9]{4}" placeholder="010-0000-0000" autocomplete="tel" required></label>
                         <div class="form-actions wide"><button class="primary">수정 저장</button></div>
@@ -151,33 +152,6 @@
                     </form>
 
                     <section id="encounter-workspace" class="hidden">
-                        <div class="encounter-header panel">
-                            <div><p id="encounter-date" class="eyebrow"></p><h2 id="encounter-title">진료 SOAP</h2><p id="encounter-summary" class="muted"></p></div>
-                            <span id="encounter-status" class="status"></span>
-                        </div>
-
-                        <section id="encounter-details" class="panel encounter-details collapsed">
-                            <button type="button" id="encounter-details-toggle" class="encounter-details-header" aria-expanded="false">
-                                <div>
-                                    <p class="eyebrow">ENCOUNTER</p>
-                                    <h2>진료 기본정보</h2>
-                                </div>
-                                <span id="encounter-details-preview" class="soap-preview"></span>
-                                <span class="soap-chevron" aria-hidden="true"></span>
-                            </button>
-                            <form id="encounter-edit-form" class="form-grid">
-                                <label>질병 분류 (선택)<select name="disease_id" id="encounter-edit-disease"><option value="">미선택</option></select></label>
-                                <label>진료일시<input name="visit_at" type="datetime-local"></label>
-                                <label class="wide">주호소<textarea name="chief_complaint" rows="2"></textarea></label>
-                                <label class="wide">History<textarea name="history_text" rows="4"></textarea></label>
-                                <label class="wide">신체검사/기초 소견<textarea name="physical_exam" rows="4"></textarea></label>
-                                <div class="form-actions wide">
-                                    <span class="muted small">질병·주호소·상세 병력은 S부터, 신체검사는 O부터 재검토됩니다.</span>
-                                    <button class="secondary">기본정보 저장</button>
-                                </div>
-                            </form>
-                        </section>
-
                         <div class="clinical-grid">
                             <section class="panel soap-panel">
                                 <div class="section-title">
@@ -201,7 +175,7 @@
                     <div class="panel-heading history-heading">
                         <div>
                             <p class="eyebrow">HISTORY</p>
-                            <h2>환자 진료 이력</h2>
+                            <h2 id="history-title">환자 진료 History</h2>
                             <p id="history-patient-name" class="muted small"></p>
                         </div>
                     </div>

@@ -17,6 +17,80 @@ class IndexingError(RuntimeError):
     pass
 
 
+def source_profile(display_name):
+    """Return stable, non-copyrighted metadata used to route clinical retrieval."""
+
+    name = str(display_name or "").strip()
+    lowered = name.casefold()
+    if "ettinger" in lowered or "textbook of veterinary internal medicine" in lowered:
+        volume_match = re.match(r"\s*(\d+)\s*[._-]", name)
+        volume = f"Volume {volume_match.group(1)}" if volume_match else None
+        return {
+            "source_type": "internal_medicine_textbook",
+            "canonical_title": "Ettinger Textbook of Veterinary Internal Medicine",
+            "edition": "8th",
+            "volume_label": volume,
+        }
+    if "critical care" in lowered:
+        return {
+            "source_type": "critical_care_textbook",
+            "canonical_title": "Small Animal Critical Care Medicine",
+            "edition": "2022",
+            "volume_label": None,
+        }
+    return {
+        "source_type": "medical_reference",
+        "canonical_title": name,
+        "edition": None,
+        "volume_label": None,
+    }
+
+
+def detect_page_heading(text, previous=None):
+    """Pick a useful chapter/section label while ignoring common PDF noise."""
+
+    candidates = []
+    for position, raw_line in enumerate((text or "").splitlines()[:50]):
+        line = re.sub(r"\s+", " ", raw_line).strip(" \t-|•")
+        if not 4 <= len(line) <= 160:
+            continue
+        lowered = line.casefold()
+        if re.fullmatch(r"(?:page\s+)?\d+", lowered):
+            continue
+        if any(
+            marker in lowered
+            for marker in ("copyright", "all rights reserved", "elsevier", "isbn")
+        ):
+            continue
+        if line.count(".") > max(4, len(line) // 12):
+            continue
+        if re.match(r"^(chapter|section|part)\s+[\divxlcdm]+\b", line, re.I):
+            candidates.append((4, -position, line))
+            continue
+        if re.match(r"^\d{1,3}(?:\.\d+)*\s+[A-Z][A-Za-z]", line):
+            candidates.append((3, -position, line))
+            continue
+        letters = [character for character in line if character.isalpha()]
+        if len(letters) >= 6 and sum(character.isupper() for character in letters) / len(letters) >= 0.8:
+            candidates.append((2, -position, line.title()))
+        elif position < 8 and len(line.split()) <= 14 and line[0].isupper():
+            candidates.append((1, -position, line))
+    return max(candidates)[2] if candidates else previous
+
+
+def embedding_text(chunk):
+    """Embed clinical content together with its book and chapter identity."""
+
+    labels = [
+        chunk.get("canonical_title"),
+        chunk.get("edition"),
+        chunk.get("volume_label"),
+        chunk.get("heading"),
+    ]
+    prefix = " | ".join(str(value) for value in labels if value)
+    return f"{prefix}\n\n{chunk['content']}" if prefix else chunk["content"]
+
+
 def sha256_file(path):
     digest = hashlib.sha256()
     with path.open("rb") as stream:
@@ -71,6 +145,8 @@ def extract_pdf(path, progress_callback=None):
             except Exception as error:
                 raise IndexingError("암호화된 PDF는 처리할 수 없습니다.") from error
         chunks = []
+        profile = source_profile(path.name)
+        current_heading = None
         if progress_callback:
             progress_callback(0, page_count)
         for page_number, page in enumerate(reader.pages, 1):
@@ -79,21 +155,15 @@ def extract_pdf(path, progress_callback=None):
             except Exception as error:
                 raise IndexingError(f"{page_number}쪽 텍스트 추출 실패: {error}") from error
             if text:
-                heading = next(
-                    (
-                        line.strip()
-                        for line in text.splitlines()
-                        if 3 <= len(line.strip()) <= 120
-                    ),
-                    None,
-                )
+                current_heading = detect_page_heading(text, current_heading)
                 for page_chunk in split_long_text(text):
                     chunks.append(
                         {
                             "page_start": page_number,
                             "page_end": page_number,
-                            "heading": heading,
+                            "heading": current_heading,
                             "content": page_chunk,
+                            **profile,
                         }
                     )
             if progress_callback and (
@@ -134,24 +204,52 @@ def embed_chunks(chunks, progress_callback=None):
     vectors = []
     for start in range(0, len(chunks), batch_size):
         batch = chunks[start : start + batch_size]
-        vectors.extend(client.embed([chunk["content"] for chunk in batch]))
+        vectors.extend(client.embed([embedding_text(chunk) for chunk in batch]))
         if progress_callback:
             progress_callback(len(vectors), len(chunks))
     return vectors
 
 
-def get_or_create_document(key, display_name):
+def get_or_create_document(key, display_name, profile=None):
+    profile = profile or source_profile(display_name)
     document = fetch_one("SELECT * FROM kb_documents WHERE source_key = %s", (key,))
     if document:
-        return document
+        with transaction():
+            execute(
+                """
+                UPDATE kb_documents
+                SET display_name=%s, source_type=%s, canonical_title=%s,
+                    edition=%s, volume_label=%s
+                WHERE id=%s
+                """,
+                (
+                    display_name,
+                    profile["source_type"],
+                    profile["canonical_title"],
+                    profile["edition"],
+                    profile["volume_label"],
+                    document["id"],
+                ),
+            )
+        return fetch_one("SELECT * FROM kb_documents WHERE id = %s", (document["id"],))
     document_id = new_id()
     with transaction():
         execute(
             """
-            INSERT INTO kb_documents (id, source_key, display_name)
-            VALUES (%s, %s, %s)
+            INSERT INTO kb_documents
+                (id, source_key, display_name, source_type, canonical_title,
+                 edition, volume_label)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
             """,
-            (document_id, key, display_name),
+            (
+                document_id,
+                key,
+                display_name,
+                profile["source_type"],
+                profile["canonical_title"],
+                profile["edition"],
+                profile["volume_label"],
+            ),
         )
     return fetch_one("SELECT * FROM kb_documents WHERE id = %s", (document_id,))
 
@@ -252,6 +350,10 @@ def points_for(document, version_id, chunks, vectors):
                 "document_version_id": version_id,
                 "source_key": document["source_key"],
                 "display_name": document["display_name"],
+                "source_type": document.get("source_type") or chunk.get("source_type"),
+                "canonical_title": document.get("canonical_title") or chunk.get("canonical_title"),
+                "edition": document.get("edition") or chunk.get("edition"),
+                "volume_label": document.get("volume_label") or chunk.get("volume_label"),
                 "page_start": chunk["page_start"],
                 "page_end": chunk["page_end"],
                 "heading": chunk["heading"],

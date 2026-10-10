@@ -66,7 +66,7 @@ h2 { margin-bottom: 0; font-size: 1.04rem; }
 .left-panel, .right-panel { border-radius: 0; border-width: 0 1px 0 0; padding: 1.15rem; box-shadow: none; overflow-y: auto; max-height: calc(100vh - 64px); }
 .right-panel { border-width: 0 0 0 1px; }
 .main-panel { padding: 1.2rem; min-width: 0; overflow-y: auto; max-height: calc(100vh - 64px); }
-.panel-heading, .section-title, .patient-banner, .encounter-header { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
+.panel-heading, .section-title, .patient-banner { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
 .panel-heading { margin-bottom: .9rem; }
 .section-title { grid-column: 1 / -1; margin-bottom: 1rem; }
 .icon-button { width: 34px; height: 34px; border: 0; border-radius: 9px; color: var(--teal); background: var(--teal-soft); font-size: 1.25rem; }
@@ -181,9 +181,9 @@ h2 { margin-bottom: 0; font-size: 1.04rem; }
 }
 .empty-state { min-height: 58vh; display: grid; place-content: center; justify-items: center; padding: 3rem; text-align: center; color: var(--muted); }
 .empty-icon { margin-bottom: 1rem; color: var(--teal); font-size: 3rem; }
-.patient-banner, .encounter-header { padding: 1.1rem 1.25rem; margin-bottom: 1rem; }
-.patient-banner { position: sticky; top: 0; z-index: 10; }
-.patient-banner p, .encounter-header p { margin-bottom: 0; }
+.patient-banner { position: sticky; top: 0; z-index: 10; padding: 1.1rem 1.25rem; margin-bottom: 1rem; }
+.patient-banner p { margin-bottom: 0; }
+.patient-banner #patient-meta { color: var(--ink); font-weight: 700; }
 .patient-title-line { display: flex; align-items: center; flex-wrap: wrap; gap: .55rem; }
 .patient-title-line h1 { margin-bottom: .35rem; }
 .status.archived { color: #795720; background: #fff4dc; }
@@ -212,21 +212,12 @@ h2 { margin-bottom: 0; font-size: 1.04rem; }
 .new-encounter-options-body { display: grid; gap: .75rem; padding: 0 .75rem .75rem; }
 .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: .9rem; margin-bottom: 1rem; padding: 1.15rem; }
 .wide { grid-column: 1 / -1; }
-.encounter-details { margin-bottom: 1rem; padding: 1.1rem; }
-.encounter-details-header { display: flex; align-items: center; gap: .7rem; width: 100%; padding: 0; border: 0; color: inherit; background: transparent; text-align: left; }
-.encounter-details-header h2 { margin-bottom: 0; }
-.encounter-details.expanded .soap-preview { display: none; }
-.encounter-details.expanded .soap-chevron { transform: translateY(.12rem) rotate(-135deg); }
-.encounter-details.collapsed #encounter-edit-form { display: none; }
-.encounter-details.expanded #encounter-edit-form { margin-top: 1rem; }
-.encounter-details .form-grid { margin: 0; padding: 0; }
-.encounter-details .form-actions { align-items: center; justify-content: space-between; }
 .main-panel > div > .panel, #patient-workspace > .panel { margin-bottom: 1rem; }
 .encounter-list { display: grid; gap: .55rem; }
 .encounter-card { display: grid; grid-template-columns: 100px 1fr auto; gap: .85rem; align-items: center; padding: .8rem; border: 1px solid var(--line); border-radius: 10px; cursor: pointer; }
 .encounter-card:hover, .encounter-card.active { border-color: var(--teal); }
 .encounter-card.active { background: #f2faf7; box-shadow: inset 3px 0 0 var(--teal); }
-.encounter-card time { font-size: .74rem; color: var(--muted); }
+.encounter-card time { font-size: .74rem; color: var(--ink); font-weight: 700; }
 .encounter-card strong { font-size: .86rem; }
 .history-heading { align-items: flex-start; }
 .history-heading p:last-child { margin: .35rem 0 0; }
@@ -290,6 +281,7 @@ h2 { margin-bottom: 0; font-size: 1.04rem; }
 .candidate { padding: .7rem; border: 1px solid var(--line); border-radius: 9px; background: #fff; }
 .candidate.selected { border-color: var(--teal); background: #f2faf7; }
 .candidate p { margin: 0 0 .55rem; white-space: pre-wrap; font-size: .83rem; line-height: 1.55; }
+.evidence-text small { display: block; margin-top: .18rem; color: var(--muted); font-size: .68rem; }
 .evidence { margin-top: .55rem; padding-top: .55rem; border-top: 1px dashed var(--line); color: var(--muted); font-size: .72rem; }
 .evidence summary { display: flex; align-items: center; gap: .45rem; width: fit-content; cursor: pointer; color: var(--teal-dark); font-weight: 800; list-style: none; }
 .evidence summary::-webkit-details-marker { display: none; }

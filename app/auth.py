@@ -45,6 +45,28 @@ def require_auth(view):
     return wrapped
 
 
+def require_roles(*roles):
+    """Restrict a route to an authenticated clinic role."""
+
+    def decorator(view):
+        @wraps(view)
+        def wrapped(*args, **kwargs):
+            if not session.get("admin_id"):
+                return jsonify({"error": "authentication_required"}), 401
+            if session.get("role") not in roles:
+                return jsonify(
+                    {
+                        "error": "permission_denied",
+                        "message": "이 작업을 수행할 권한이 없습니다.",
+                    }
+                ), 403
+            return view(*args, **kwargs)
+
+        return wrapped
+
+    return decorator
+
+
 def csrf_token():
     token = session.get("csrf_token")
     if not token:
@@ -61,6 +83,16 @@ def install_guards(app):
         public_paths = {"/api/health", "/api/auth/login"}
         if request.path not in public_paths and not session.get("admin_id"):
             return jsonify({"error": "authentication_required"}), 401
+        if request.path not in public_paths:
+            active_admin = fetch_one(
+                "SELECT role,is_active FROM admins WHERE id=%s", (session["admin_id"],)
+            )
+            if not active_admin or not active_admin["is_active"]:
+                session.clear()
+                return jsonify({"error": "authentication_required"}), 401
+            # Role changes and deactivation must affect existing sessions without
+            # waiting for the user to sign in again.
+            session["role"] = active_admin["role"]
         if (
             request.method in {"POST", "PUT", "PATCH", "DELETE"}
             and request.path != "/api/auth/login"
@@ -114,6 +146,7 @@ def login():
     session.permanent = True
     session["admin_id"] = admin["id"]
     session["username"] = admin["username"]
+    session["role"] = admin.get("role") or "veterinarian"
     token = csrf_token()
     with transaction():
         execute(
@@ -126,7 +159,12 @@ def login():
         )
         audit("auth.login", "admin", admin["id"])
     return jsonify(
-        {"id": admin["id"], "username": admin["username"], "csrf_token": token}
+        {
+            "id": admin["id"],
+            "username": admin["username"],
+            "role": session["role"],
+            "csrf_token": token,
+        }
     )
 
 
@@ -142,7 +180,7 @@ def logout():
 @bp.get("/me")
 def me():
     admin = fetch_one(
-        "SELECT id, username, last_login_at FROM admins WHERE id = %s AND is_active = TRUE",
+        "SELECT id, username, role, last_login_at FROM admins WHERE id = %s AND is_active = TRUE",
         (session["admin_id"],),
     )
     if not admin:

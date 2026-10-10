@@ -12,6 +12,7 @@ def env_bool(name, default=False):
 class Config:
     BASE_DIR = Path(__file__).resolve().parent.parent
     DEBUG = env_bool("FLASK_DEBUG")
+    DEPLOYMENT_MODE = os.environ.get("DEPLOYMENT_MODE", "development")
     SECRET_KEY = os.environ.get("SECRET_KEY")
     SESSION_COOKIE_HTTPONLY = True
     SESSION_COOKIE_SAMESITE = "Strict"
@@ -34,8 +35,12 @@ class Config:
 
     STORAGE_ROOT = Path(os.environ.get("STORAGE_ROOT", BASE_DIR / "storage")).resolve()
     XRAY_ROOT = STORAGE_ROOT / "xrays"
+    ECHO_VIDEO_ROOT = STORAGE_ROOT / "echo-videos"
     KNOWLEDGE_ROOT = STORAGE_ROOT / "knowledge" / "inbox"
     MAX_XRAY_BYTES = int(os.environ.get("MAX_XRAY_BYTES", str(25 * 1024 * 1024)))
+    MAX_ECHO_VIDEO_BYTES = int(
+        os.environ.get("MAX_ECHO_VIDEO_BYTES", str(25 * 1024 * 1024))
+    )
     MAX_PDF_BYTES = int(os.environ.get("MAX_PDF_BYTES", str(512 * 1024 * 1024)))
     MAX_PDF_PAGES = int(os.environ.get("MAX_PDF_PAGES", "10000"))
 
@@ -60,7 +65,9 @@ class Config:
     QDRANT_TIMEOUT_SECONDS = float(os.environ.get("QDRANT_TIMEOUT_SECONDS", "120"))
     QDRANT_UPSERT_BATCH_SIZE = int(os.environ.get("QDRANT_UPSERT_BATCH_SIZE", "32"))
     RAG_TOP_K = int(os.environ.get("RAG_TOP_K", "6"))
-    CHUNKER_VERSION = "paragraph-v1"
+    RAG_CANDIDATE_POOL = int(os.environ.get("RAG_CANDIDATE_POOL", "18"))
+    RAG_MAX_PER_DOCUMENT = int(os.environ.get("RAG_MAX_PER_DOCUMENT", "3"))
+    CHUNKER_VERSION = "clinical-book-v2"
 
     WORKER_POLL_SECONDS = float(os.environ.get("WORKER_POLL_SECONDS", "3"))
 
@@ -74,3 +81,9 @@ class Config:
             raise RuntimeError("INDEX_HTTP_MAX_ATTEMPTS must be between 1 and 10.")
         if cls.INDEX_HTTP_BACKOFF_SECONDS < 0:
             raise RuntimeError("INDEX_HTTP_BACKOFF_SECONDS must not be negative.")
+        if cls.RAG_CANDIDATE_POOL < cls.RAG_TOP_K:
+            raise RuntimeError("RAG_CANDIDATE_POOL must be at least RAG_TOP_K.")
+        if cls.RAG_MAX_PER_DOCUMENT < 1:
+            raise RuntimeError("RAG_MAX_PER_DOCUMENT must be positive.")
+        if cls.DEPLOYMENT_MODE not in {"development", "pilot"}:
+            raise RuntimeError("DEPLOYMENT_MODE must be development or pilot.")

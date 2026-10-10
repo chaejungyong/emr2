@@ -7,6 +7,7 @@ services:
       MYSQL_ROOT_PASSWORD: ${DB_PASSWORD}
       MYSQL_DATABASE: ${DB_NAME}
       MYSQL_ROOT_HOST: '%'
+      TZ: ${TZ:-Asia/Seoul}
     volumes:
       - ./db_data:/var/lib/mysql
     healthcheck:

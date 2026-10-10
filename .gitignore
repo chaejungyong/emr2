@@ -18,6 +18,8 @@ storage/qdrant/*
 !storage/qdrant/.gitkeep
 storage/xrays/*
 !storage/xrays/.gitkeep
+storage/echo-videos/*
+!storage/echo-videos/.gitkeep
 storage/knowledge/inbox/*
 !storage/knowledge/inbox/.gitkeep
 

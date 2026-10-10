@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="color-scheme" content="light">
+    <title>SOAP AI VetEMR · Cardiology</title>
+    <link rel="stylesheet" href="/static/css/cardio.css">
+</head>
+<body>
+    <section id="login-view" class="login-view">
+        <form id="login-form" class="login-card">
+            <div class="brand-mark">♥</div>
+            <p class="eyebrow">VETERINARY CARDIOLOGY</p>
+            <h1>SOAP AI VetEMR</h1>
+            <p class="muted">1인 심장특화 동물병원 진료 시스템</p>
+            <label>사용자명<input name="username" autocomplete="username" required></label>
+            <label>비밀번호<input name="password" type="password" autocomplete="current-password" required></label>
+            <button type="submit" class="primary">로그인</button>
+            <p id="login-error" class="error" role="alert"></p>
+        </form>
+    </section>
+
+    <div id="app-view" class="app-view hidden">
+        <header class="topbar">
+            <button class="brand-inline" type="button" data-view="today"><span>♥</span><strong>SOAP AI VetEMR</strong></button>
+            <nav class="primary-nav" aria-label="주 메뉴">
+                <button type="button" data-view="today" class="active">오늘진료</button>
+                <button type="button" data-view="patients">환자</button>
+                <button type="button" data-view="diagnostics">심장검사</button>
+                <button type="button" data-view="results">검사결과</button>
+                <button type="button" data-view="schedule">일정</button>
+                <button id="admin-tools-button" type="button" aria-controls="admin-drawer" aria-expanded="false"><span id="admin-status-dot" class="admin-status-dot"></span>설정</button>
+            </nav>
+            <div class="topbar-actions"><span id="model-badge" class="badge">AI 설정 확인 중</span><span id="user-name"></span><button id="logout-button" class="topbar-logout">로그아웃</button></div>
+        </header>
+
+        <main class="view-stack">
+            <section id="today-view" class="app-page active" data-page="today">
+                <div class="page-heading"><div><p class="eyebrow">TODAY</p><h1 id="today-title">오늘 진료</h1></div><button type="button" class="primary" data-view="patients">환자 찾기 · 새 진료</button></div>
+                <div id="today-summary" class="metric-strip"><article><span>오늘 진료</span><strong>–</strong></article><article><span>완료</span><strong>–</strong></article><article><span>미완료</span><strong>–</strong></article><article><span>Echo 기록 필요</span><strong>–</strong></article></div>
+                <div class="dashboard-grid">
+                    <section class="panel dashboard-list-panel"><div class="section-title"><div><p class="eyebrow">CLINIC FLOW</p><h2>오늘 환자</h2></div></div><div id="today-encounters" class="today-list"></div></section>
+                    <aside class="dashboard-side">
+                        <section class="panel task-panel"><p class="eyebrow">UNFINISHED</p><h2>할 일</h2><form id="task-form" class="task-quick-form"><select name="task_type" aria-label="할 일 종류"><option value="result_review">검사결과 확인</option><option value="callback">보호자 callback</option><option value="general">일반</option></select><select name="patient_id" aria-label="환자"><option value="">환자 없음</option></select><input name="title" maxlength="240" required placeholder="할 일"><button type="submit" class="secondary">추가</button></form><div id="today-tasks" class="task-list"></div></section>
+                        <section class="panel revenue-panel"><p class="eyebrow">TODAY</p><h2>오늘 매출</h2><p class="empty-copy">결제·환불 시각 기준</p><div id="today-visit-summary" class="visit-summary"></div><button id="close-day-button" type="button" class="secondary">오늘 일마감</button><p id="daily-close-status" class="muted small"></p></section>
+                    </aside>
+                </div>
+            </section>
+
+            <section id="patients-view" class="app-page" data-page="patients">
+                <aside id="patient-browser" class="patient-browser panel">
+                    <div class="panel-heading"><div><p class="eyebrow">PATIENTS</p><h2>환자</h2></div><button id="toggle-patient-form" class="icon-button" title="환자 추가" type="button">＋</button></div>
+                    <input id="patient-search" class="search" placeholder="이름 또는 차트번호 검색">
+                    <label class="patient-archive-filter"><input id="show-archived-patients" type="checkbox"><span>보관 환자도 보기</span></label>
+                    <form id="patient-form" class="stack compact-form hidden">
+                        <p id="new-patient-chart" class="patient-chart-label">차트번호 확인 중…</p>
+                        <input name="name" class="korean-input" lang="ko" placeholder="환자 이름 *" required>
+                        <div class="field-row"><label>종<select name="species" required><option value="">선택</option><option value="Canine">개</option><option value="Feline">고양이</option></select></label><label>품종<input name="breed" placeholder="품종"></label></div>
+                        <label>성별<select name="sex_status" required><option value="">성별</option><option value="male:false">수컷</option><option value="male:true">수컷중성화</option><option value="female:false">암컷</option><option value="female:true">암컷중성화</option></select></label>
+                        <div class="birth-date-field">
+                            <label for="patient-birth-date-display">생년월일</label>
+                            <div class="birth-date-control"><input id="patient-birth-date-display" type="text" autocomplete="off" placeholder="년/월/일 또는 1y · 1m · 25d" aria-controls="patient-birth-calendar" aria-expanded="false"><input id="patient-birth-date" name="birth_date" type="hidden"><button id="birth-calendar-toggle" class="birth-calendar-toggle" type="button">▾</button></div>
+                            <div id="patient-birth-calendar" class="birth-calendar hidden" role="dialog"><p class="birth-calendar-help">나이로 입력: 1y · 1m · 25d</p><div class="birth-calendar-header"><button id="birth-calendar-prev" type="button">‹</button><strong id="birth-calendar-title"></strong><button id="birth-calendar-next" type="button">›</button></div><div class="birth-calendar-weekdays"><span>일</span><span>월</span><span>화</span><span>수</span><span>목</span><span>금</span><span>토</span></div><div id="birth-calendar-days" class="birth-calendar-days"></div><button id="birth-calendar-today" type="button" class="birth-calendar-today"></button></div>
+                        </div>
+                        <label>보호자<input name="owner_name" class="korean-input" lang="ko" required></label>
+                        <label>핸드폰<input name="owner_phone" type="tel" maxlength="13" pattern="010-[0-9]{4}-[0-9]{4}" placeholder="010-0000-0000" required></label>
+                        <label>현재 약물<input name="current_medications" required placeholder="없음 또는 약품·용량"></label>
+                        <label>알레르기<input name="allergies" required placeholder="없음 또는 확인된 알레르기"></label>
+                        <div class="form-actions"><button type="button" data-cancel="patient">취소</button><button class="primary">저장</button></div>
+                    </form>
+                    <div id="patient-list" class="item-list"></div>
+                </aside>
+                <section id="empty-state" class="patient-empty panel"><div class="empty-icon">♥</div><h2>환자를 선택하세요</h2><p>환자를 선택하면 심장 진료 차트가 열립니다.</p></section>
+
+                <div id="patient-workspace" class="patient-workspace hidden">
+                    <section class="patient-banner panel">
+                        <button id="back-to-patient-list" type="button" class="icon-button">‹</button>
+                        <div class="patient-identity"><p id="patient-chart" class="patient-chart-label"></p><div class="patient-title-line"><h1 id="patient-title"></h1><span id="patient-archive-status" class="status archived hidden">보관됨</span></div><p id="patient-meta" class="muted"></p><div id="patient-cardiac-badges" class="patient-cardiac-badges"></div></div>
+                        <div class="form-actions"><button id="edit-patient-contact-button" type="button" class="secondary">환자 정보 수정</button><button id="archive-patient-button" type="button" class="danger-ghost">목록에서 숨기기</button><button id="new-encounter-button" type="button" class="primary">새 진료</button></div>
+                    </section>
+                    <form id="patient-contact-form" class="panel form-grid hidden"><div class="section-title"><h2>환자 정보 수정</h2><button id="cancel-patient-contact" type="button" class="ghost">닫기</button></div><label>환자 이름<input name="name" class="korean-input" maxlength="120" required></label><label>보호자<input name="owner_name" class="korean-input" required></label><label>핸드폰<input name="owner_phone" type="tel" maxlength="13" pattern="010-[0-9]{4}-[0-9]{4}" required></label><label>종<select name="species" required><option value="Canine">개</option><option value="Feline">고양이</option></select></label><label>품종<input name="breed" maxlength="120"></label><label>성별<select name="sex_status" required><option value="male:false">수컷</option><option value="male:true">수컷중성화</option><option value="female:false">암컷</option><option value="female:true">암컷중성화</option><option value="unknown:false">미상</option></select></label><label>생년월일<input name="birth_date" type="date"></label><label>현재 체중 (kg)<input name="weight_kg" type="number" min="0.01" max="500" step="0.01"></label><label class="wide">과거병력·기본 메모<textarea name="notes" rows="3"></textarea></label><label class="wide">현재 약물<textarea name="current_medications" rows="3" placeholder="약품명, 용량, 횟수"></textarea></label><label class="wide">알레르기<textarea name="allergies" rows="2" placeholder="없음 또는 확인된 알레르기"></textarea></label><label class="wide">예방 관리<textarea name="preventive_care" rows="2" placeholder="예방접종, 심장사상충 예방 등"></textarea></label><div class="form-actions wide"><button class="primary">수정 저장</button></div></form>
+
+                    <div class="cardio-chart-grid">
+                        <aside class="chart-left">
+                            <section class="panel patient-summary-card"><p class="eyebrow">PATIENT SUMMARY</p><h2>환자 요약</h2><dl id="patient-summary-list" class="summary-list"></dl><div class="summary-subsection"><strong>과거병력</strong><p id="patient-past-history">미입력</p></div><div class="summary-subsection"><strong>약물</strong><p id="patient-medications">미입력</p></div><div class="summary-subsection"><strong>알레르기</strong><p id="patient-allergies">미입력</p></div><div class="summary-subsection"><strong>예방</strong><p id="patient-preventive-care">미입력</p></div></section>
+                            <section class="panel timeline-card"><div id="history-empty" class="history-empty"><p class="muted small">과거 진료가 없습니다.</p></div><div id="history-content" class="hidden"><div class="panel-heading history-heading"><div><p class="eyebrow">TIMELINE</p><h2 id="history-title">진료 History</h2><p id="history-patient-name" class="muted small"></p></div></div><div id="encounter-list" class="encounter-list"></div></div></section>
+                        </aside>
+                        <section class="chart-center">
+                            <form id="encounter-form" class="panel new-subjective-form hidden"><div class="new-subjective-heading"><div class="new-subjective-title"><span class="stage-letter">S</span><div><p class="eyebrow">SUBJECTIVE</p><h2>새 심장 진료</h2></div></div><button type="button" data-cancel="encounter" class="ghost">닫기</button></div><label>주호소<textarea name="chief_complaint" rows="3" required></textarea></label><details id="new-encounter-options" class="new-encounter-options" open><summary>질병 분류 및 상세 병력</summary><div class="new-encounter-options-body"><label>질병 분류<select name="disease_id" id="encounter-disease"><option value="">미선택</option></select></label><label>상세 병력/보호자 진술<textarea name="history_text" rows="4" required></textarea></label></div></details><input name="visit_at" type="hidden"><div class="form-actions"><button class="primary">진료 시작</button></div></form>
+                            <section id="encounter-placeholder" class="panel encounter-placeholder"><p class="eyebrow">TODAY CARDIAC VISIT</p><h2>오늘 심장 진료</h2><p>Timeline에서 진료를 선택하거나 새 진료를 시작하세요.</p></section>
+                            <section id="encounter-workspace" class="hidden">
+                                <section class="panel workflow-panel"><div class="section-title"><div><p class="eyebrow">CLINIC WORKFLOW</p><h2>진료 진행</h2></div><span id="workflow-current" class="status"></span></div><div id="workflow-steps" class="workflow-steps"></div><div id="workflow-blockers" class="workflow-blockers"></div><button id="workflow-next-button" type="button" class="primary">다음 단계</button></section>
+                                <section class="panel visit-heading"><div><p class="eyebrow">TODAY CARDIAC VISIT</p><h2>오늘 심장 진료</h2><p id="active-encounter-label" class="muted"></p></div><div class="test-shortcuts"><button type="button" data-open-diagnostic="echo">Echo</button><button type="button" data-open-diagnostic="ecg">ECG</button><button type="button" data-open-diagnostic="xray">X-ray</button><button type="button" data-open-diagnostic="bp">BP</button><button type="button" data-open-diagnostic="lab">Lab</button></div></section>
+                                <details class="panel encounter-edit-details"><summary>진료 기본정보 수정</summary><form id="encounter-edit-form" class="form-grid"><label>질병 분류<select name="disease_id" id="encounter-edit-disease"><option value="">미선택</option></select></label><label>진료일시<input name="visit_at" type="datetime-local"></label><label class="wide">주호소<textarea name="chief_complaint" rows="2" required></textarea></label><label class="wide">History<textarea name="history_text" rows="4" required></textarea></label><label class="wide">신체검사/기초 소견<textarea name="physical_exam" rows="4"></textarea></label><div class="form-actions wide"><button class="secondary">진료정보 저장</button></div></form></details>
+                                <section class="panel soap-panel"><div class="section-title"><div><p class="eyebrow">ASSISTED NOTE</p><h2>단계별 SOAP</h2></div><span class="review-warning">AI 초안 · 수의사 검토 필수</span></div><div id="soap-steps" class="soap-steps"></div></section>
+                            </section>
+                        </section>
+                        <aside class="chart-right"><section class="panel cardio-summary-card"><p class="eyebrow">CARDIO SUMMARY</p><h2>심장 핵심 요약</h2><div id="cardio-summary-table" class="cardio-summary-table"></div><div id="cardio-classification" class="cardio-classification"></div><div id="cardio-change-alerts" class="change-alerts"></div></section></aside>
+                    </div>
+                    <footer class="patient-action-bar"><button id="save-visit-button" type="button" class="primary">💾 저장</button><button id="complete-visit-button" type="button">✓ 진료완료</button><button type="button" data-report="owner">📄 보호자설명서</button><button type="button" data-report="echo">📄 Echo Report</button><button type="button" data-report="prescription">💊 처방</button><button type="button" data-report="billing">💳 수납</button></footer>
+                </div>
+            </section>
+
+            <section id="diagnostics-view" class="app-page" data-page="diagnostics">
+                <div class="page-heading"><div><p class="eyebrow">CARDIAC DIAGNOSTICS</p><h1>심장검사</h1><p id="diagnostics-context" class="muted">환자와 진료를 먼저 선택하세요.</p></div><button type="button" class="secondary" data-view="patients">환자차트로 돌아가기</button></div>
+                <section id="diagnostics-no-selection" class="panel page-empty"><h2>진료 선택 필요</h2><p>환자차트의 Timeline에서 진료를 선택한 뒤 검사 기록을 입력하세요.</p></section>
+                <div id="diagnostics-workspace" class="diagnostics-workspace hidden">
+                    <section class="panel diagnostic-plan"><div class="section-title"><div><p class="eyebrow">REVIEW PLAN</p><h2>이번 진료 검사 계획</h2></div><button id="save-diagnostic-plan" type="button" class="secondary">검사 계획 저장</button></div><div id="diagnostic-plan-items" class="diagnostic-plan-items"></div><p class="muted small">선택한 검사는 수의사가 검토 완료해야 Assessment로 진행할 수 있습니다. 미실시는 사유를 입력하세요.</p></section>
+                    <div class="diagnostic-tabs" role="tablist"><button type="button" data-diagnostic-tab="echo" class="active">Echo</button><button type="button" data-diagnostic-tab="ecg">ECG</button><button type="button" data-diagnostic-tab="xray">X-ray</button><button type="button" data-diagnostic-tab="bp">BP</button><button type="button" data-diagnostic-tab="lab">Lab</button></div>
+                    <form id="cardiac-exam-form" class="panel cardiac-exam-form">
+                        <section data-diagnostic-panel="echo">
+                            <div class="section-title"><div><p class="eyebrow">ECHOCARDIOGRAPHY</p><h2>심초음파</h2></div><span class="review-warning">자동평가 참고용 · 사용자 확정 필요</span></div>
+                            <div class="echo-subtabs" role="tablist" aria-label="Echo 측정 구역"><button type="button" class="active" data-echo-subtab="2d">2D</button><button type="button" data-echo-subtab="mmode">M-mode</button><button type="button" data-echo-subtab="doppler">Doppler</button><button type="button" data-echo-subtab="tdi">TDI</button><button type="button" data-echo-subtab="findings">Findings</button></div>
+                            <div class="measurement-grid"><label>LA/Ao<input name="la_ao" type="number" step="0.001" min="0" max="10"></label><label>LVIDd (cm)<input name="lvidd_cm" type="number" step="0.001" min="0" max="30"></label><label>LVIDDN<input name="lviddn" type="number" step="0.001" min="0" max="10"></label><label>LVIDs (cm)<input name="lvids_cm" type="number" step="0.001" min="0" max="30"></label><label>FS %<input name="fs_percent" type="number" step="0.01" min="0" max="100"></label><label>E velocity (m/s)<input name="e_velocity_ms" type="number" step="0.001" min="0" max="10"></label><label>A velocity (m/s)<input name="a_velocity_ms" type="number" step="0.001" min="0" max="10"></label><label>E/A<input name="e_a_ratio" type="number" step="0.001" readonly></label><label>TR Vmax (m/s)<input name="tr_vmax_ms" type="number" step="0.001" min="0" max="10"></label><label>PR (m/s)<input name="pr_vmax_ms" type="number" step="0.001" min="0" max="10"></label></div>
+                            <fieldset class="finding-fieldset"><legend>Mitral Regurgitation</legend><label><input type="radio" name="mr_severity" value="none"> 없음</label><label><input type="radio" name="mr_severity" value="mild"> Mild</label><label><input type="radio" name="mr_severity" value="moderate"> Moderate</label><label><input type="radio" name="mr_severity" value="severe"> Severe</label></fieldset>
+                            <div class="check-grid"><label><input name="sam" type="checkbox"> SAM</label><label><input name="lvoto" type="checkbox"> LVOTO</label><label><input name="sec_present" type="checkbox"> SEC</label><label><input name="la_thrombus" type="checkbox"> LA thrombus</label><label><input name="pericardial_effusion" type="checkbox"> Pericardial effusion</label></div>
+                            <label>Findings<textarea name="findings" rows="4"></textarea></label><label>Assessment<textarea name="assessment" rows="4"></textarea></label><div id="auto-assessment" class="auto-assessment"><strong>자동평가 · 참고용</strong><p>측정값을 입력하면 변화 경고와 예상 분류 참고 문구가 표시됩니다.</p></div>
+                            <section class="workflow-block"><div class="section-title"><div><p class="eyebrow">CINE LOOP</p><h3>Echo 영상</h3></div></div><div class="upload-row"><input id="echo-video-file" type="file" accept="video/mp4,video/webm"><input id="echo-video-recorded-at" type="datetime-local" aria-label="촬영일시"><input id="echo-video-note" maxlength="500" placeholder="뷰·메모"><button id="upload-echo-video" type="button" class="secondary">영상 업로드</button></div><div id="echo-video-list" class="video-grid"></div></section>
+                            <div class="echo-flow-actions"><button type="button" class="secondary" data-view="results">이전 Echo 비교</button><button type="button" class="secondary" data-report="echo">Echo Report</button></div>
+                        </section>
+                        <section data-diagnostic-panel="ecg" class="hidden"><div class="section-title"><div><p class="eyebrow">ELECTROCARDIOGRAPHY</p><h2>ECG</h2></div><span class="review-warning">수의사 판독 기록</span></div><div class="measurement-grid"><label>기록일시<input name="ecg_recorded_at" type="datetime-local"></label><label>HR<input name="ecg_heart_rate_bpm" type="number" min="1" max="500"></label><label>Rhythm<input name="ecg_rhythm" maxlength="120"></label><label>PR (ms)<input name="ecg_pr_ms" type="number" min="1" max="1000"></label><label>QRS (ms)<input name="ecg_qrs_ms" type="number" min="1" max="1000"></label><label>QT (ms)<input name="ecg_qt_ms" type="number" min="1" max="2000"></label></div><label>ECG 판독<textarea name="ecg_interpretation" rows="6" placeholder="리듬과 파형 판독을 기록하세요."></textarea></label><button id="save-ecg" type="button" class="primary workflow-save">ECG 저장</button></section>
+                        <section data-diagnostic-panel="xray" class="hidden"><div id="diagnostic-xray-root"></div></section>
+                        <section data-diagnostic-panel="bp" class="hidden"><div class="section-title"><div><p class="eyebrow">VITALS & RADIOGRAPHY</p><h2>신체검사 · BP · X-ray 지표</h2></div></div><div class="symptom-grid"><label><input name="cough" type="checkbox"> 기침</label><label><input name="syncope" type="checkbox"> 실신</label><label><input name="exercise_intolerance" type="checkbox"> 운동불내성</label><label><input name="nocturnal_tachypnea" type="checkbox"> 야간호흡증가</label></div><div class="measurement-grid"><label>BW (kg)<input name="body_weight_kg" type="number" step="0.01" min="0.01" max="500"></label><label>HR<input name="heart_rate_bpm" type="number" min="1" max="500"></label><label>RR<input name="respiratory_rate_rpm" type="number" min="1" max="300"></label><label>BP systolic<input name="systolic_bp_mmhg" type="number" min="20" max="350"></label><label>Home RR<input name="home_rr_rpm" type="number" min="1" max="200"></label><label>VHS<input name="vhs" type="number" step="0.01" min="0" max="30"></label><label>VLAS<input name="vlas" type="number" step="0.01" min="0" max="10"></label><label>Murmur<select name="murmur_grade"><option value="">미입력</option><option>I/VI</option><option>II/VI</option><option>III/VI</option><option>IV/VI</option><option>V/VI</option><option>VI/VI</option></select></label><label>Rhythm<input name="rhythm" maxlength="80" placeholder="Regular"></label></div></section>
+                        <section data-diagnostic-panel="lab" class="hidden"><div class="section-title"><div><p class="eyebrow">LABORATORY</p><h2>Lab</h2></div><span class="review-warning">구조화 검사결과</span></div><div class="measurement-grid"><label>채혈일시<input name="lab_collected_at" type="datetime-local"></label><label>NT-proBNP (pmol/L)<input name="nt_probnp_pmol_l" type="number" min="0" max="100000" step="0.01"></label><label>Troponin-I (ng/mL)<input name="troponin_i_ng_ml" type="number" min="0" max="100000" step="0.001"></label><label>BUN (mg/dL)<input name="bun_mg_dl" type="number" min="0" max="100000" step="0.01"></label><label>Creatinine (mg/dL)<input name="creatinine_mg_dl" type="number" min="0" max="100000" step="0.01"></label><label>Na (mmol/L)<input name="sodium_mmol_l" type="number" min="0" max="100000" step="0.01"></label><label>K (mmol/L)<input name="potassium_mmol_l" type="number" min="0" max="100000" step="0.01"></label></div><label>Lab 소견<textarea name="lab_notes" rows="6"></textarea></label><button id="save-lab" type="button" class="primary workflow-save">Lab 저장</button></section>
+                        <section class="diagnostic-classification"><div class="measurement-grid"><label>ACVIM Stage<select name="acvim_stage"><option value="">미확정</option><option>A</option><option>B1</option><option>B2</option><option>C</option><option>D</option></select></label><label>PH 위험<select name="ph_risk"><option value="">미입력</option><option value="low">낮음</option><option value="intermediate">중간</option><option value="high">높음</option></select></label><label>CHF<select name="chf_status"><option value="">미입력</option><option value="none">없음</option><option value="suspected">의심</option><option value="present">있음</option></select></label><label>다음 검사 (개월)<input name="follow_up_months" type="number" min="1" max="120"></label></div><button type="submit" class="primary">심장검사 저장</button></section>
+                    </form>
+                </div>
+            </section>
+
+            <section id="results-view" class="app-page" data-page="results">
+                <div class="page-heading"><div><p class="eyebrow">LONGITUDINAL REVIEW</p><h1>검사결과 · 심장 Timeline</h1><p id="results-context" class="muted">환자를 선택하면 시간에 따른 변화를 표시합니다.</p></div></div>
+                <section id="results-empty" class="panel page-empty"><h2>환자 선택 필요</h2><p>환자 메뉴에서 환자를 선택하세요.</p></section>
+                <div id="results-content" class="results-content hidden">
+                    <section class="panel"><div id="trend-charts" class="trend-charts"></div></section>
+                    <section class="panel"><div class="section-title"><h2>현재 · 이전 · 변화</h2></div><div id="trend-table" class="trend-table"></div></section>
+                    <section class="panel monitoring-panel">
+                        <div class="section-title"><div><p class="eyebrow">HOME & CLINIC MONITORING</p><h2>경과 모니터링</h2></div><span class="review-warning">추가형 기록 · 기존 기록 보존</span></div>
+                        <form id="monitoring-form" class="monitoring-form">
+                            <label>측정일시<input name="measured_at" type="datetime-local" required></label>
+                            <label>출처<select name="source"><option value="owner_report">보호자 보고</option><option value="clinic">병원 측정</option><option value="device">장비</option></select></label>
+                            <label>체중 (kg)<input name="body_weight_kg" type="number" min="0.01" max="500" step="0.01"></label>
+                            <label>안정 시 호흡수<input name="home_rr_rpm" type="number" min="1" max="200"></label>
+                            <label>수축기 혈압<input name="systolic_bp_mmhg" type="number" min="20" max="350"></label>
+                            <label>심박수<input name="heart_rate_bpm" type="number" min="1" max="500"></label>
+                            <label>식욕<select name="appetite"><option value="unknown">미확인</option><option value="normal">정상</option><option value="reduced">감소</option><option value="none">없음</option></select></label>
+                            <label>복약<select name="medication_adherence"><option value="unknown">미확인</option><option value="all">모두 투약</option><option value="partial">일부 누락</option><option value="missed">투약 못함</option></select></label>
+                            <div class="monitoring-symptoms"><label><input name="cough" type="checkbox"> 기침</label><label><input name="dyspnea" type="checkbox"> 호흡곤란</label><label><input name="syncope" type="checkbox"> 실신</label></div>
+                            <label class="wide">부작용·이상반응<input name="adverse_effects" maxlength="2000" placeholder="식욕저하, 구토, 무기력 등"></label>
+                            <label class="wide">메모<textarea name="notes" rows="2" maxlength="4000"></textarea></label>
+                            <div class="form-actions wide"><button type="submit" class="primary">모니터링 기록 추가</button></div>
+                        </form>
+                        <div id="monitoring-list" class="monitoring-list"></div>
+                    </section>
+                    <section id="revision-panel" class="panel hidden"><div class="section-title"><div><p class="eyebrow">IMMUTABLE HISTORY</p><h2>선택 진료 검사 변경 이력</h2></div></div><div id="revision-list" class="revision-list"></div></section>
+                </div>
+            </section>
+
+            <section id="schedule-view" class="app-page" data-page="schedule"><div class="page-heading"><div><p class="eyebrow">SCHEDULE</p><h1>일정</h1></div><input id="schedule-date" type="date" aria-label="조회 날짜"></div><div class="schedule-layout"><form id="appointment-form" class="panel schedule-form"><input name="appointment_id" type="hidden"><div class="section-title"><h2 id="appointment-form-title">예약 등록</h2></div><label>환자<select name="patient_id" required></select></label><label>일시<input name="starts_at" type="datetime-local" required></label><label>진료 시간(분)<input name="duration_minutes" type="number" min="5" max="480" value="30" required></label><label>방문 목적<input name="purpose" maxlength="240" required placeholder="재검, Echo, BP 재검"></label><label>상태<select name="status"><option value="scheduled">예약</option><option value="arrived">내원</option><option value="completed">완료</option><option value="cancelled">취소</option><option value="no_show">미내원</option></select></label><label>메모<textarea name="notes" rows="4"></textarea></label><div class="form-actions"><button id="cancel-appointment-edit" type="button" class="ghost hidden">수정 취소</button><button class="primary" type="submit">예약 저장</button></div></form><section class="panel schedule-board"><div class="section-title"><h2>진료 일정</h2><span id="schedule-count" class="badge">0건</span></div><div id="appointment-list" class="appointment-list"></div></section></div></section>
+
+            <section id="report-view" class="app-page" data-page="report"><div class="page-heading"><div><p class="eyebrow">REPORT · PRESCRIPTION · BILLING</p><h1 id="report-title">보고서</h1></div><button type="button" class="secondary" data-view="patients">환자차트로 돌아가기</button></div><section class="panel report-paper"><div id="report-content"></div><div class="report-actions"><button id="print-report-button" type="button" class="primary">인쇄</button></div></section></section>
+        </main>
+
+        <div id="admin-backdrop" class="admin-backdrop" aria-hidden="true"></div>
+        <aside id="admin-drawer" class="admin-drawer" aria-hidden="true"><div class="admin-drawer-header"><div><p class="eyebrow">SETTINGS</p><h2 id="admin-drawer-title">설정</h2></div><button id="admin-drawer-close" type="button" class="icon-button">×</button></div><section id="user-admin-section" class="admin-section"><div class="panel-heading"><div><p class="eyebrow">USERS</p><h2>사용자·권한</h2></div></div><form id="user-form" class="stack compact-form"><input name="username" maxlength="100" placeholder="사용자명" required><input name="password" type="password" minlength="12" placeholder="비밀번호 12자 이상" required><select name="role"><option value="staff">스태프</option><option value="veterinarian">수의사</option></select><button class="secondary">계정 추가</button></form><div id="user-list" class="tag-list"></div></section><section class="admin-section"><div class="panel-heading"><div><p class="eyebrow">DISEASES</p><h2>질병 분류</h2></div></div><form id="disease-form" class="stack compact-form"><input name="name" placeholder="질병명" required><input name="category" value="심장질환"><button class="secondary">추가</button></form><div id="disease-list" class="tag-list"></div></section><section class="admin-section"><div class="panel-heading"><div><p class="eyebrow">KNOWLEDGE</p><h2>의학 문서 인덱스</h2></div></div><p class="muted small"><code>storage/knowledge/inbox</code>의 PDF를 색인합니다.</p><div id="knowledge-summary" class="knowledge-summary"></div><div class="field-row"><button id="incremental-index" class="secondary">증분 갱신</button><button id="full-index" class="danger-ghost">전체 재색인</button></div><div id="index-jobs" class="job-list"></div></section></aside>
+    </div>
+    <div id="toast-region" class="toast-region" aria-live="polite"></div>
+    <script type="module" src="/static/js/app.js"></script>
+</body>
+</html>

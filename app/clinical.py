@@ -5,9 +5,10 @@ from datetime import datetime
 from pathlib import Path
 
 from PIL import Image, UnidentifiedImageError
-from flask import Blueprint, current_app, jsonify, request, send_file
+from flask import Blueprint, current_app, jsonify, request, send_file, session
 
 from .db import audit, execute, fetch_all, fetch_one, new_id, transaction
+from .clinical_records import record_clinical_revision
 
 
 bp = Blueprint("clinical", __name__, url_prefix="/api")
@@ -164,9 +165,9 @@ def list_patients():
     elif status == "archived":
         conditions.append("p.is_archived = TRUE")
     if query:
-        conditions.append("(p.name LIKE %s OR p.chart_number LIKE %s)")
+        conditions.append("(p.name LIKE %s OR p.chart_number LIKE %s OR p.owner_phone LIKE %s)")
         needle = f"%{query}%"
-        params.extend([needle, needle])
+        params.extend([needle, needle, needle])
     where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
     rows = fetch_all(
         f"""
@@ -221,6 +222,17 @@ def create_patient():
             """,
             (patient_id, chart_number, *patient_values),
         )
+        profile = {
+            key: clean_text(payload.get(key))
+            for key in ("current_medications", "allergies", "preventive_care")
+            if key in payload
+        }
+        if profile:
+            assignments = ", ".join(f"{key} = %s" for key in profile)
+            execute(
+                f"UPDATE patients SET {assignments} WHERE id = %s",
+                [*profile.values(), patient_id],
+            )
         audit("patient.create", "patient", patient_id)
     return jsonify(fetch_one("SELECT * FROM patients WHERE id = %s", (patient_id,))), 201
 
@@ -275,6 +287,9 @@ def update_patient(patient_id):
         "birth_date",
         "weight_kg",
         "notes",
+        "current_medications",
+        "allergies",
+        "preventive_care",
         "is_archived",
     }
     updates, params = [], []
@@ -292,7 +307,7 @@ def update_patient(patient_id):
                     raise ValueError("invalid_species")
             elif key in {"breed"}:
                 value = clean_text(value, 120)
-            elif key == "notes":
+            elif key in {"notes", "current_medications", "allergies", "preventive_care"}:
                 value = clean_text(value)
             elif key == "sex" and value not in ALLOWED_SEX:
                 raise ValueError("invalid_sex")
@@ -317,6 +332,26 @@ def update_patient(patient_id):
     params.append(patient_id)
     with transaction():
         execute(f"UPDATE patients SET {', '.join(updates)} WHERE id = %s", params)
+        context_fields = {
+            "species", "breed", "sex", "neutered", "birth_date",
+            "weight_kg", "notes", "current_medications", "allergies",
+            "preventive_care",
+        }
+        if set(payload) & context_fields:
+            from .workflow_state import invalidate_workflow
+
+            encounters = fetch_all(
+                "SELECT id FROM encounters WHERE patient_id=%s AND workflow_stage <> 'closed'",
+                (patient_id,),
+            )
+            for encounter in encounters:
+                mark_soap_stages_stale(encounter["id"], ("S", "O", "A", "P"))
+                invalidate_workflow(encounter["id"], "intake")
+            if set(payload) & {"weight_kg", "current_medications", "allergies"}:
+                execute(
+                    "UPDATE prescriptions pr JOIN encounters e ON e.id=pr.encounter_id SET pr.review_required=TRUE WHERE e.patient_id=%s AND e.workflow_stage <> 'closed' AND pr.status IN ('draft','issued')",
+                    (patient_id,),
+                )
         if set(payload) == {"is_archived"}:
             action = "patient.archive" if payload["is_archived"] else "patient.restore"
         else:
@@ -340,6 +375,8 @@ def list_diseases():
 
 @bp.post("/diseases")
 def create_disease():
+    if session.get("admin_id") and session.get("role") != "veterinarian":
+        return jsonify({"error": "permission_denied"}), 403
     payload, error = body()
     if error:
         return error
@@ -361,6 +398,8 @@ def create_disease():
 
 @bp.patch("/diseases/<disease_id>")
 def update_disease(disease_id):
+    if session.get("admin_id") and session.get("role") != "veterinarian":
+        return jsonify({"error": "permission_denied"}), 403
     if not fetch_one("SELECT id FROM diseases WHERE id = %s", (disease_id,)):
         return jsonify({"error": "disease_not_found"}), 404
     payload, error = body()
@@ -499,7 +538,8 @@ def get_encounter(encounter_id):
 def update_encounter(encounter_id):
     existing = fetch_one(
         """
-        SELECT disease_id, visit_at, chief_complaint, history_text, physical_exam
+        SELECT disease_id, visit_at, chief_complaint, history_text, physical_exam,
+               workflow_stage
         FROM encounters
         WHERE id = %s
         """,
@@ -507,9 +547,18 @@ def update_encounter(encounter_id):
     )
     if not existing:
         return jsonify({"error": "encounter_not_found"}), 404
+    if existing["workflow_stage"] == "closed":
+        return jsonify(
+            {
+                "error": "encounter_closed",
+                "message": "종료된 진료입니다. 수의사가 진료를 다시 연 뒤 수정하세요.",
+            }
+        ), 409
     payload, error = body()
     if error:
         return error
+    if session.get("admin_id") and session.get("role") != "veterinarian" and set(payload) & {"physical_exam", "disease_id"}:
+        return jsonify({"error": "permission_denied"}), 403
     allowed = {
         "disease_id",
         "visit_at",
@@ -548,6 +597,14 @@ def update_encounter(encounter_id):
         execute(f"UPDATE encounters SET {', '.join(updates)} WHERE id = %s", params)
         affected_stages = affected_soap_stages(updated_fields)
         mark_soap_stages_stale(encounter_id, affected_stages)
+        if set(updated_fields) & {"chief_complaint", "history_text", "disease_id"}:
+            from .workflow_state import invalidate_workflow
+
+            invalidate_workflow(encounter_id, "intake")
+        elif "physical_exam" in updated_fields:
+            from .workflow_state import invalidate_workflow
+
+            invalidate_workflow(encounter_id, "examination")
         audit("encounter.update", "encounter", encounter_id, {"fields": updated_fields})
     return get_encounter(encounter_id)
 
@@ -588,8 +645,18 @@ def present_xray(row):
 
 @bp.post("/encounters/<encounter_id>/xrays")
 def upload_xray(encounter_id):
-    if not fetch_one("SELECT id FROM encounters WHERE id = %s", (encounter_id,)):
+    encounter = fetch_one(
+        "SELECT id, workflow_stage FROM encounters WHERE id = %s", (encounter_id,)
+    )
+    if not encounter:
         return jsonify({"error": "encounter_not_found"}), 404
+    if encounter["workflow_stage"] == "closed":
+        return jsonify(
+            {
+                "error": "encounter_closed",
+                "message": "종료된 진료입니다. 진료를 다시 연 뒤 X-ray를 등록하세요.",
+            }
+        ), 409
     existing_count = fetch_one(
         "SELECT COUNT(*) AS count FROM xray_assets WHERE encounter_id = %s",
         (encounter_id,),
@@ -612,6 +679,13 @@ def upload_xray(encounter_id):
         reading_text = clean_text(request.form.get("reading_text"))
     except ValueError:
         return validation_error("X-ray 입력값을 확인하세요.")
+    if reading_text and session.get("role") != "veterinarian":
+        return jsonify(
+            {
+                "error": "permission_denied",
+                "message": "X-ray 판독 소견은 수의사만 입력할 수 있습니다.",
+            }
+        ), 403
 
     xray_id = new_id()
     relative = Path(encounter_id) / f"{xray_id}{extension}"
@@ -642,6 +716,24 @@ def upload_xray(encounter_id):
                     reading_text,
                 ),
             )
+            record_clinical_revision(
+                encounter_id,
+                "xray",
+                xray_id,
+                {
+                    "id": xray_id,
+                    "encounter_id": encounter_id,
+                    "original_name": Path(uploaded.filename).name[:255],
+                    "mime_type": mime_type,
+                    "size_bytes": len(data),
+                    "sha256": hashlib.sha256(data).hexdigest(),
+                    "taken_at": taken_at,
+                    "body_region": body_region,
+                    "reading_text": reading_text,
+                },
+                "created",
+                ("file", "taken_at", "body_region", "reading_text"),
+            )
             if xray_context_signature(
                 {
                     "taken_at": taken_at,
@@ -650,6 +742,21 @@ def upload_xray(encounter_id):
                 }
             ):
                 mark_soap_stages_stale(encounter_id, SOAP_STAGES[1:])
+                execute(
+                    "UPDATE encounters SET workflow_stage='diagnostics', workflow_updated_at=CURRENT_TIMESTAMP(6) WHERE id=%s AND workflow_stage IN ('documentation','education','checkout')",
+                    (encounter_id,),
+                )
+                execute(
+                    "UPDATE client_education_documents SET status='superseded' WHERE encounter_id=%s AND status IN ('draft','delivered')",
+                    (encounter_id,),
+                )
+                execute(
+                    "UPDATE prescriptions SET review_required=TRUE WHERE encounter_id=%s AND status IN ('draft','issued')",
+                    (encounter_id,),
+                )
+                from .workflow_state import invalidate_diagnostic_review
+
+                invalidate_diagnostic_review(encounter_id, "xray")
             audit("xray.upload", "xray", xray_id, {"size_bytes": len(data)})
     except Exception:
         destination.unlink(missing_ok=True)
@@ -689,17 +796,28 @@ def get_xray_file(xray_id):
 def update_xray(xray_id):
     existing = fetch_one(
         """
-        SELECT id, encounter_id, taken_at, body_region, reading_text
-        FROM xray_assets
-        WHERE id = %s
+        SELECT x.id, x.encounter_id, x.taken_at, x.body_region, x.reading_text,
+               e.workflow_stage
+        FROM xray_assets x
+        JOIN encounters e ON e.id=x.encounter_id
+        WHERE x.id = %s
         """,
         (xray_id,),
     )
     if not existing:
         return jsonify({"error": "xray_not_found"}), 404
+    if existing["workflow_stage"] == "closed":
+        return jsonify(
+            {
+                "error": "encounter_closed",
+                "message": "종료된 진료입니다. 진료를 다시 연 뒤 X-ray를 수정하세요.",
+            }
+        ), 409
     payload, error = body()
     if error:
         return error
+    if "reading_text" in payload and session.get("admin_id") and session.get("role") != "veterinarian":
+        return jsonify({"error": "permission_denied"}), 403
     updates, params = [], []
     updated_xray = dict(existing)
     try:
@@ -724,7 +842,33 @@ def update_xray(xray_id):
     params.append(xray_id)
     with transaction():
         execute(f"UPDATE xray_assets SET {', '.join(updates)} WHERE id = %s", params)
+        revision_snapshot = dict(existing)
+        revision_snapshot.pop("workflow_stage", None)
+        revision_snapshot.update(updated_xray)
+        record_clinical_revision(
+            existing["encounter_id"],
+            "xray",
+            xray_id,
+            revision_snapshot,
+            "updated",
+            payload.keys(),
+        )
         if context_changed:
             mark_soap_stages_stale(existing["encounter_id"], SOAP_STAGES[1:])
+            execute(
+                "UPDATE encounters SET workflow_stage='diagnostics', workflow_updated_at=CURRENT_TIMESTAMP(6) WHERE id=%s AND workflow_stage IN ('documentation','education','checkout')",
+                (existing["encounter_id"],),
+            )
+            execute(
+                "UPDATE client_education_documents SET status='superseded' WHERE encounter_id=%s AND status IN ('draft','delivered')",
+                (existing["encounter_id"],),
+            )
+            execute(
+                "UPDATE prescriptions SET review_required=TRUE WHERE encounter_id=%s AND status IN ('draft','issued')",
+                (existing["encounter_id"],),
+            )
+            from .workflow_state import invalidate_diagnostic_review
+
+            invalidate_diagnostic_review(existing["encounter_id"], "xray")
         audit("xray.update", "xray", xray_id, {"fields": list(payload)})
     return jsonify(present_xray(fetch_one("SELECT * FROM xray_assets WHERE id = %s", (xray_id,))))

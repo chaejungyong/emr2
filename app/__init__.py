@@ -12,6 +12,7 @@ def create_app(config_object=Config):
     config_object.validate()
 
     app.config["XRAY_ROOT"].mkdir(parents=True, exist_ok=True)
+    app.config["ECHO_VIDEO_ROOT"].mkdir(parents=True, exist_ok=True)
     app.config["KNOWLEDGE_ROOT"].mkdir(parents=True, exist_ok=True)
 
     from . import db
@@ -23,11 +24,17 @@ def create_app(config_object=Config):
     from .admin import bp as admin_bp
     from .auth import bp as auth_bp
     from .auth import init_admin, install_guards
+    from .cardio import bp as cardio_bp
     from .clinical import bp as clinical_bp
+    from .commercial import bp as commercial_bp
     from .soap import bp as soap_bp
+    from .workflow import bp as workflow_bp
 
     app.register_blueprint(auth_bp)
     app.register_blueprint(clinical_bp)
+    app.register_blueprint(cardio_bp)
+    app.register_blueprint(workflow_bp)
+    app.register_blueprint(commercial_bp)
     app.register_blueprint(soap_bp)
     app.register_blueprint(admin_bp)
     install_guards(app)
@@ -35,7 +42,7 @@ def create_app(config_object=Config):
 
     @app.get("/")
     def index():
-        return send_from_directory(app.static_folder, "index.html")
+        return send_from_directory(app.static_folder, "cardio.html")
 
     @app.get("/api/health")
     def health():
@@ -72,6 +79,8 @@ def create_app(config_object=Config):
             "default-src 'self'; img-src 'self' data:; style-src 'self'; "
             "script-src 'self'; connect-src 'self'; frame-ancestors 'none'"
         )
+        if app.config["SESSION_COOKIE_SECURE"]:
+            response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
         if request.path.startswith("/api/") or request.path == "/" or request.path.startswith("/static/"):
             response.headers["Cache-Control"] = "no-store"
         return response

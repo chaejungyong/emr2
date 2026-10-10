@@ -216,3 +216,18 @@ Python 변경 후 관련 컨테이너 재시작, 정적 파일 변경 후 브라
 - 원격: `https://github.com/chaejungyong/emr2.git`
 - 사용자 요청 없이 commit/push하지 마세요.
 - `.env`나 runtime 의료 데이터를 stage/commit하지 마세요.
+
+## 15. 상용 파일럿 워크플로 변경(2026-10-09)
+
+- `sql/007`~`010`은 각각 심장검사, 임상 워크플로, 환자 심장 프로필, 상용 상태 머신을 추가합니다. 기존 migration은 수정하지 마세요.
+- 기본 화면은 `static/cardio.html`이며 `app/commercial.py`가 예약 접수, 단계 전환, 검사 검토, 보호자 설명, 구조화 처방, 청구·결제·환불·일마감을 담당합니다.
+- encounter 업무 단계는 `intake → examination → diagnostics → documentation → education → checkout → closed`입니다. `encounters.status`는 SOAP 완료 호환 필드이고 최종 진료 종료 여부는 `workflow_stage='closed'`로 판단합니다.
+- 기존 완료 진료는 migration 010에서 `closed`로 이관합니다. 기존 `billing_records`와 자유형 처방 API는 호환용으로 보존하며 새 UI는 `invoices`, `payments`, `prescription_items/revisions`를 사용합니다.
+- 수의사만 검사 검토, SOAP 생성·확정, 구조화 처방 발행, 설명서 생성을 할 수 있습니다. 스태프는 접수·예약·인구학 정보·설명서 교부·청구·결제를 담당합니다.
+- 외부 AI 컨텍스트에서 환자 이름·차트번호·보호자 정보를 제외하고 현재 약물·알레르기·예방정보를 포함합니다.
+- Echo 영상 경로 `storage/echo-videos/`는 Git 제외 대상입니다.
+- 운영 절차는 `docs/PILOT_OPERATIONS.md`를 따릅니다. 실제 파일럿 전 HTTPS, Secure cookie, 최소권한 DB 계정, 암호화 외부백업과 복구훈련이 필요합니다.
+- 접수→검사→SOAP→처방→설명→수납→종료 흐름에는 단계별 서버 가드가 적용되어 있습니다. 진행 중 진료의 reopen 우회, 종료 후 임상 수정, 결과 없는 검사 검토, SOAP/검사/처방 변경 후 하위 산출물 재사용, 스태프의 X-ray 판독 입력을 차단합니다.
+- 심장검사 저장 시 `workflow_stage` 누락, 검사 결과 변경 후 검토 상태 유지, 구형 자유형 처방의 상용 단계 우회를 수정했습니다. 검사 결과 변경은 해당 검사 요구사항을 `completed`(결과 삭제 시 `planned`)로 되돌리고 검토자·검토시각을 제거합니다. 상용 처방 단계는 구조화 revision이 있는 발행/불필요 처방만 인정합니다.
+- 정적 검사와 총 68개 테스트 함수의 문법 검사는 통과했지만, 에이전트의 Docker socket 권한이 없어 이 변경 후 Docker pytest 및 실제 MariaDB migration/X-ray/Echo 브라우저 E2E는 아직 실행하지 않았습니다.
+- `sql/012`와 `clinical-book-v2`는 Ettinger 8판 두 권 및 Critical Care 교재를 출처 유형·판본·권·장·페이지와 함께 색인합니다. SOAP RAG는 단계·종·질환별 다중 질의, Ettinger 우선 가중치, 문서별 결과 제한, 급성 CHF/호흡곤란의 Critical Care 질의를 사용합니다. 적용 후 반드시 전체 재색인하고 근거 표시를 확인하세요.
