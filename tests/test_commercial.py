@@ -176,6 +176,7 @@ def test_prescription_write_waits_for_education_stage(monkeypatch):
 
     client = app.test_client()
     with client.session_transaction() as session:
+        session["admin_id"] = "vet-1"
         session["role"] = "veterinarian"
     response = client.put(
         "/api/encounters/encounter-1/structured-prescription",

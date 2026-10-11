@@ -597,6 +597,7 @@ def test_cardiac_exam_save_marks_o_and_later_stale(monkeypatch):
     from app import cardio
 
     app = Flask(__name__)
+    app.secret_key = "test-only"
     app.register_blueprint(cardio.bp)
     stale_calls = []
     diagnostic_review_calls = []
@@ -616,6 +617,9 @@ def test_cardiac_exam_save_marks_o_and_later_stale(monkeypatch):
     monkeypatch.setattr(cardio, "fetch_one", fake_fetch_one)
     monkeypatch.setattr(cardio, "execute", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(cardio, "audit", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        cardio, "record_clinical_revision", lambda *_args, **_kwargs: None
+    )
     monkeypatch.setattr(cardio, "transaction", nullcontext)
     monkeypatch.setattr(cardio, "new_id", lambda: "exam-1")
     monkeypatch.setattr(
@@ -636,7 +640,11 @@ def test_cardiac_exam_save_marks_o_and_later_stale(monkeypatch):
         lambda encounter_id: {"encounter_id": encounter_id, "exam": {}, "previous": None, "deltas": {}},
     )
 
-    response = app.test_client().put(
+    client = app.test_client()
+    with client.session_transaction() as session:
+        session["admin_id"] = "vet-1"
+        session["role"] = "veterinarian"
+    response = client.put(
         "/api/encounters/encounter-1/cardiac-exam",
         json={"la_ao": 1.78, "lviddn": 1.62},
     )
@@ -731,6 +739,9 @@ def test_xray_reading_change_requires_veterinarian_rereview(monkeypatch):
     monkeypatch.setattr(clinical, "execute", fake_execute)
     monkeypatch.setattr(clinical, "transaction", nullcontext)
     monkeypatch.setattr(clinical, "audit", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        clinical, "record_clinical_revision", lambda *_args, **_kwargs: None
+    )
     monkeypatch.setattr(
         clinical,
         "mark_soap_stages_stale",
@@ -837,6 +848,9 @@ def test_ecg_save_marks_objective_and_later_soap_stale(monkeypatch):
     monkeypatch.setattr(workflow, "new_id", lambda: "ecg-1")
     monkeypatch.setattr(workflow, "transaction", nullcontext)
     monkeypatch.setattr(workflow, "audit", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        workflow, "record_clinical_revision", lambda *_args, **_kwargs: None
+    )
     monkeypatch.setattr(
         workflow,
         "mark_soap_stages_stale",
@@ -1112,9 +1126,13 @@ def test_assessment_diagnosis_name_is_required_and_normalized():
         validate_diagnosis_name("A", "진" * 256)
 
 
-def test_api_guard_requires_session_and_csrf():
+def test_api_guard_requires_session_and_csrf(monkeypatch):
     app = Flask(__name__)
     app.secret_key = "test-secret"
+    monkeypatch.setattr(
+        "app.auth.fetch_one",
+        lambda *_args, **_kwargs: {"role": "veterinarian", "is_active": True},
+    )
 
     @app.get("/api/private")
     def private_get():
