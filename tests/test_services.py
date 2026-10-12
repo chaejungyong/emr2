@@ -1,6 +1,7 @@
 import io
 import json
 from contextlib import nullcontext
+from pathlib import Path
 
 import pytest
 from flask import Flask
@@ -37,6 +38,24 @@ from app.soap import (
     stage_is_unlocked,
     validate_diagnosis_name,
 )
+
+
+def test_clinical_forms_keep_independent_submit_controls():
+    static_root = Path(__file__).parents[1] / "static"
+    html = (static_root / "cardio.html").read_text(
+        encoding="utf-8"
+    )
+    javascript = (static_root / "js" / "app.js").read_text(encoding="utf-8")
+    cardiac_start = html.index('id="cardiac-exam-form"')
+    cardiac_end = html.index("</form>", cardiac_start)
+    xray_root = html.index('id="diagnostic-xray-root"')
+
+    assert cardiac_end < xray_root
+    assert '<button type="submit" class="secondary">진료정보 저장</button>' in html
+    assert "datetimeLocalValue(new Date().toISOString())" not in javascript
+    assert javascript.count('name="paid_at" type="datetime-local" value="${currentDatetimeLocal()}"') == 2
+    assert javascript.count('name="amount" type="number" min="1" max="${balance}" step="1"') == 1
+    assert javascript.count('name="amount" type="number" min="1" max="${invoice.paid_amount}" step="1"') == 1
 
 
 def test_api_url_accepts_root_or_v1_base():
