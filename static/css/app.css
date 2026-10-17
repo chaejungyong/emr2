@@ -274,7 +274,6 @@ h2 { margin-bottom: 0; font-size: 1.04rem; }
 .soap-step.collapsed .soap-step-body { display: none; }
 .soap-step-body { display: grid; gap: .7rem; padding: .8rem; }
 .soap-stage-actions { display: flex; flex-wrap: wrap; gap: .5rem; }
-.notebooklm-link { display: inline-flex; align-items: center; gap: .35rem; text-decoration: none; }
 .candidates-fold { border: 1px solid var(--line); border-radius: 9px; background: #fbfcfb; }
 .candidates-fold summary { padding: .55rem .75rem; cursor: pointer; font-size: .78rem; font-weight: 750; }
 .candidates-fold .candidates { display: grid; gap: .55rem; padding: 0 .7rem .7rem; }
@@ -299,6 +298,16 @@ h2 { margin-bottom: 0; font-size: 1.04rem; }
 .tag-list { display: flex; flex-wrap: wrap; gap: .4rem; }
 .tag { padding: .35rem .55rem; border-radius: 999px; color: var(--teal-dark); background: var(--teal-soft); font-size: .7rem; }
 .knowledge-summary { padding: .7rem; margin-bottom: .7rem; border-radius: 9px; background: #f7faf8; font-size: .75rem; line-height: 1.6; }
+.knowledge-preview-controls { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: .45rem; min-width: 0; margin-top: .7rem; }
+.knowledge-preview-controls select { min-width: 0; }
+.knowledge-preview { display: grid; gap: .6rem; min-width: 0; margin-top: .7rem; }
+.knowledge-preview-heading, .knowledge-preview-meta { display: flex; justify-content: space-between; gap: .5rem; font-size: .72rem; }
+.knowledge-preview-heading strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.knowledge-preview-page { min-width: 0; padding: .65rem; border: 1px solid var(--line); border-radius: 8px; background: #fff; }
+.knowledge-preview-meta span { color: var(--muted); text-align: right; }
+.knowledge-preview-page pre { overflow: auto; max-width: 100%; max-height: 240px; margin: .5rem 0 0; padding: .6rem; border-radius: 6px; background: #f7faf8; font: .7rem/1.55 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; }
+.knowledge-preview-warnings { margin: .45rem 0 0; padding-left: 1.15rem; color: var(--danger); font-size: .7rem; }
+.knowledge-preview-ok { margin: .45rem 0 0; color: var(--teal); font-size: .7rem; }
 .job-list { display: grid; gap: .55rem; margin-top: .85rem; }
 .job { padding: .65rem; border: 1px solid var(--line); border-radius: 8px; font-size: .72rem; }
 .job progress { width: 100%; height: 6px; margin-top: .45rem; }
@@ -307,7 +316,7 @@ h2 { margin-bottom: 0; font-size: 1.04rem; }
 .job-current progress { height: 8px; }
 .admin-backdrop { position: fixed; inset: 64px 0 0; z-index: 29; visibility: hidden; background: rgba(12,31,28,.34); opacity: 0; transition: opacity .18s ease, visibility .18s ease; }
 .admin-backdrop.open { visibility: visible; opacity: 1; }
-.admin-drawer { position: fixed; top: 64px; right: 0; bottom: 0; z-index: 30; width: min(430px, calc(100vw - 2rem)); padding: 1.25rem; overflow-y: auto; background: var(--surface); box-shadow: -18px 0 42px rgba(17,45,40,.18); visibility: hidden; transform: translateX(105%); transition: transform .2s ease, visibility .2s ease; }
+.admin-drawer { position: fixed; top: 64px; right: 0; bottom: 0; z-index: 30; width: min(430px, calc(100vw - 2rem)); padding: 1.25rem; overflow-x: hidden; overflow-y: auto; background: var(--surface); box-shadow: -18px 0 42px rgba(17,45,40,.18); visibility: hidden; transform: translateX(105%); transition: transform .2s ease, visibility .2s ease; }
 .admin-drawer.open { visibility: visible; transform: translateX(0); }
 .admin-drawer-header { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding-bottom: 1rem; border-bottom: 1px solid var(--line); }
 .admin-drawer-header .icon-button { font-size: 1.35rem; }

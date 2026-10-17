@@ -25,8 +25,10 @@ from app.indexing import (
     detect_page_heading,
     embed_chunks,
     embedding_text,
+    extraction_quality,
     extract_pdf,
     normalize_text,
+    preview_pdf,
     source_profile,
     split_long_text,
     update_item_progress,
@@ -35,6 +37,7 @@ from app.soap import (
     build_context,
     build_evidence_queries,
     rank_evidence_results,
+    should_include_critical_care,
     stage_is_unlocked,
     validate_diagnosis_name,
 )
@@ -56,6 +59,8 @@ def test_clinical_forms_keep_independent_submit_controls():
     assert javascript.count('name="paid_at" type="datetime-local" value="${currentDatetimeLocal()}"') == 2
     assert javascript.count('name="amount" type="number" min="1" max="${balance}" step="1"') == 1
     assert javascript.count('name="amount" type="number" min="1" max="${invoice.paid_amount}" step="1"') == 1
+    assert '$("#new-encounter-options").open = true;' in javascript
+    assert 'addEventListener("invalid"' in javascript
 
 
 def test_api_url_accepts_root_or_v1_base():
@@ -155,6 +160,79 @@ def test_pdf_extraction_reports_progress_for_pages_without_text(
     assert progress == [(0, 3), (3, 3)]
 
 
+def test_extraction_quality_flags_broken_font_mapping():
+    quality = extraction_quality(("정상 한글 문장 " * 20) + "\ufffd\ufffd\ufffd" + "\ue000")
+
+    assert quality["hangul_count"] > 0
+    assert quality["replacement_count"] == 3
+    assert quality["private_use_count"] == 1
+    assert any("대체문자" in warning for warning in quality["warnings"])
+    assert any("사설 영역" in warning for warning in quality["warnings"])
+
+
+def test_pdf_preview_samples_first_middle_and_last_pages(monkeypatch, tmp_path):
+    class Page:
+        def __init__(self, number):
+            self.number = number
+
+        def extract_text(self):
+            return f"{self.number}쪽 " + ("읽을 수 있는 한글 문장입니다. " * 10)
+
+    class Reader:
+        pages = [Page(number) for number in range(1, 6)]
+        is_encrypted = False
+
+    pdf_path = tmp_path / "sample.pdf"
+    pdf_path.write_bytes(b"%PDF-test")
+    monkeypatch.setattr("app.indexing.PdfReader", lambda *_args, **_kwargs: Reader())
+    app = Flask(__name__)
+    app.config["MAX_PDF_BYTES"] = 1024
+    app.config["MAX_PDF_PAGES"] = 10
+
+    with app.app_context():
+        preview = preview_pdf(pdf_path, max_characters=40)
+
+    assert preview["page_count"] == 5
+    assert [page["page_number"] for page in preview["pages"]] == [1, 3, 5]
+    assert all(page["truncated"] for page in preview["pages"])
+    assert all(page["hangul_count"] > 0 for page in preview["pages"])
+
+
+def test_knowledge_preview_only_accepts_scanned_source_keys(monkeypatch, tmp_path):
+    from app import admin
+
+    pdf_path = tmp_path / "book.pdf"
+    pdf_path.write_bytes(b"%PDF-test")
+    monkeypatch.setattr(admin, "scan_pdfs", lambda: [pdf_path])
+    monkeypatch.setattr(admin, "source_key", lambda _path: "books/book.pdf")
+    monkeypatch.setattr(
+        admin,
+        "preview_pdf",
+        lambda _path: {"page_count": 1, "pages": []},
+    )
+    app = Flask(__name__)
+    app.secret_key = "test-only-secret"
+    app.register_blueprint(admin.bp)
+    client = app.test_client()
+    with client.session_transaction() as session_data:
+        session_data["admin_id"] = "vet-id"
+        session_data["role"] = "veterinarian"
+
+    response = client.get(
+        "/api/admin/knowledge-preview",
+        query_string={"source_key": "books/book.pdf"},
+    )
+    traversal = client.get(
+        "/api/admin/knowledge-preview",
+        query_string={"source_key": "../.env"},
+    )
+
+    assert response.status_code == 200
+    assert response.get_json()["source_key"] == "books/book.pdf"
+    assert traversal.status_code == 404
+    assert traversal.get_json()["error"] == "knowledge_file_not_found"
+
+
 def test_embedding_reports_batch_progress(monkeypatch):
     class EmbeddingStub:
         @staticmethod
@@ -196,6 +274,37 @@ def test_ettinger_source_profile_and_embedding_keep_book_context():
     assert text.endswith("Mitral regurgitation assessment.")
 
 
+def test_cardiology_source_profiles_preserve_titles_and_editions():
+    assert source_profile("0-1.small-animal-cardiovascular-medicine.pdf") == {
+        "source_type": "cardiology_textbook",
+        "canonical_title": "Small Animal Cardiovascular Medicine",
+        "edition": "1st (1998)",
+        "volume_label": None,
+    }
+    assert source_profile(
+        "0-2.Clinical-Echocardiography-of-the-Dog-and-Cat-1e.pdf"
+    ) == {
+        "source_type": "echocardiography_textbook",
+        "canonical_title": "Clinical Echocardiography of the Dog and Cat",
+        "edition": "1st (2016)",
+        "volume_label": None,
+    }
+    assert source_profile(
+        "0-3Textbook of Cardiovascular Medicine in Dogs and Cats..pdf"
+    ) == {
+        "source_type": "cardiology_textbook",
+        "canonical_title": "Textbook of Cardiovascular Medicine in Dogs and Cats",
+        "edition": "2023",
+        "volume_label": None,
+    }
+    assert source_profile("0-4.Manual of Canine and Feline Cardiology{Smith .pdf") == {
+        "source_type": "cardiology_handbook",
+        "canonical_title": "Manual of Canine and Feline Cardiology",
+        "edition": "5th (2016)",
+        "volume_label": None,
+    }
+
+
 def test_page_heading_prefers_chapter_and_carries_previous_heading():
     assert detect_page_heading("12\nCHAPTER 42 Cardiac Disease\nBody text") == (
         "CHAPTER 42 Cardiac Disease"
@@ -220,6 +329,39 @@ def test_evidence_queries_route_ettinger_and_critical_care_by_stage():
     assert any("Ettinger Textbook" in query for query in queries)
     assert any("Critical Care Medicine" in query for query in queries)
     assert all("Canine" not in query or "canine dog" in query for query in queries)
+
+
+def test_subjective_mmvd_queries_focus_on_mitral_history_without_critical_care():
+    context = {
+        "patient": {"species": "Canine"},
+        "encounter": {
+            "disease_name": "심장질환 · 이첨판폐쇄부전",
+            "chief_complaint": "최근 2주간 야간 기침과 운동불내성이 증가함",
+            "history_text": "휴식 시 호흡수 32회, 실신 없음",
+        },
+        "confirmed_soap": {},
+    }
+
+    queries = build_evidence_queries("S", context, "기침 휴식 호흡수 증가")
+
+    assert all("Critical Care Medicine" not in query for query in queries)
+    assert all("myxomatous mitral valve disease" in query for query in queries)
+    assert not should_include_critical_care("S", context, "호흡수 증가")
+
+
+def test_critical_care_requires_assessment_or_plan_with_acute_signs():
+    acute_context = {
+        "cardiac_exam": {"chf_status": "present"},
+        "confirmed_soap": {"O": "폐부종과 호흡곤란 확인"},
+    }
+    stable_context = {
+        "cardiac_exam": {"chf_status": "absent"},
+        "confirmed_soap": {"O": "기침과 운동불내성"},
+    }
+
+    assert should_include_critical_care("A", acute_context, "급성 심부전")
+    assert not should_include_critical_care("O", acute_context, "폐부종")
+    assert not should_include_critical_care("A", stable_context, "기침과 운동불내성")
 
 
 def test_evidence_ranking_merges_queries_and_limits_one_document():
@@ -252,6 +394,32 @@ def test_evidence_ranking_merges_queries_and_limits_one_document():
     selected_ids = [item["item"]["payload"]["chunk_id"] for item in ranked]
     assert selected_ids[0] == "e1"
     assert set(selected_ids) == {"e1", "c1", "g1"}
+
+
+def test_evidence_ranking_excludes_critical_care_for_nonacute_stage():
+    def result(chunk_id, document_id, score, source_type):
+        return {
+            "id": chunk_id,
+            "score": score,
+            "payload": {
+                "chunk_id": chunk_id,
+                "document_id": document_id,
+                "source_type": source_type,
+            },
+        }
+
+    ranked = rank_evidence_results(
+        [[
+            result("c1", "critical", 0.95, "critical_care_textbook"),
+            result("e1", "ettinger", 0.83, "internal_medicine_textbook"),
+            result("e2", "ettinger", 0.82, "internal_medicine_textbook"),
+        ]],
+        limit=2,
+        max_per_document=1,
+        excluded_source_types={"critical_care_textbook"},
+    )
+
+    assert [item["item"]["payload"]["chunk_id"] for item in ranked] == ["e1", "e2"]
 
 
 def test_chunk_storage_reports_batched_progress(monkeypatch):

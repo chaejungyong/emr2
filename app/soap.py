@@ -1,6 +1,7 @@
 import json
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 
 import httpx
@@ -25,6 +26,11 @@ STAGE_RETRIEVAL_TERMS = {
     "A": "cardiac differential diagnosis disease classification staging prognosis MMVD cardiomyopathy pulmonary hypertension",
     "P": "cardiac treatment plan medication safety monitoring follow-up adverse effects cardiorenal electrolytes",
 }
+ACUTE_CARDIOPULMONARY_PATTERN = re.compile(
+    r"dyspnea|respiratory distress|pulmonary edema|acute chf|decompensated chf|"
+    r"호흡곤란|호흡 부전|폐부종|급성 심부전|비대상성 심부전|청색증",
+    re.I,
+)
 
 
 def normalize_stage(stage):
@@ -318,6 +324,12 @@ def build_evidence_queries(stage, context, base_query):
         patient.get("species"), str(patient.get("species") or "")
     )
     disease = str(encounter.get("disease_name") or "cardiac disease")
+    disease_terms = disease
+    if re.search(r"MMVD|이첨판|승모판|mitral", disease, re.I):
+        disease_terms = (
+            f"{disease} MMVD myxomatous mitral valve disease "
+            "degenerative mitral valve disease mitral regurgitation"
+        )
     complaint = str(encounter.get("chief_complaint") or "")
     history = str(encounter.get("history_text") or "")
     diagnosis = str(context.get("confirmed_diagnosis_name") or "")
@@ -331,17 +343,20 @@ def build_evidence_queries(stage, context, base_query):
         str(value or "") for value in (context.get("confirmed_soap") or {}).values()
     )
     queries = [
-        f"{species} {disease} {stage_terms} {complaint} {history}",
-        f"Ettinger Textbook of Veterinary Internal Medicine {species} {disease} {stage_terms} {diagnosis}",
-        f"{species} {disease} {objective} {confirmed} SOAP {stage}",
+        f"{species} {disease_terms} {stage_terms} {complaint} {history}",
+        f"Ettinger Textbook of Veterinary Internal Medicine {species} {disease_terms} {stage_terms} {diagnosis}",
     ]
-    if stage in {"A", "P"} and re.search(
-        r"dyspnea|respiratory distress|pulmonary edema|chf|호흡곤란|폐부종|실신",
-        f"{base_query} {objective}",
-        re.I,
-    ):
+    if stage == "S":
         queries.append(
-            f"Small Animal Critical Care Medicine {species} {disease} emergency stabilization monitoring"
+            f"{species} {disease_terms} history clinical signs cough exercise intolerance resting respiratory rate"
+        )
+    else:
+        queries.append(
+            f"{species} {disease_terms} {objective} {confirmed} SOAP {stage}"
+        )
+    if should_include_critical_care(stage, context, base_query):
+        queries.append(
+            f"Small Animal Critical Care Medicine {species} {disease_terms} emergency stabilization monitoring"
         )
     unique = []
     for query in queries:
@@ -351,12 +366,35 @@ def build_evidence_queries(stage, context, base_query):
     return unique
 
 
-def rank_evidence_results(result_sets, limit, max_per_document):
+def should_include_critical_care(stage, context, base_query):
+    if stage not in {"A", "P"}:
+        return False
+    objective = " ".join(
+        json.dumps(context.get(key) or {}, ensure_ascii=False, default=str)
+        for key in ("cardiac_exam", "ecg_exam", "lab_result")
+        if context.get(key)
+    )
+    confirmed = " ".join(
+        str(value or "") for value in (context.get("confirmed_soap") or {}).values()
+    )
+    return bool(
+        ACUTE_CARDIOPULMONARY_PATTERN.search(
+            f"{base_query} {objective} {confirmed}"
+        )
+    )
+
+
+def rank_evidence_results(
+    result_sets, limit, max_per_document, excluded_source_types=None
+):
+    excluded_source_types = set(excluded_source_types or ())
     merged = {}
     for results in result_sets:
         seen_in_query = set()
         for item in results:
             payload = item.get("payload") or {}
+            if payload.get("source_type") in excluded_source_types:
+                continue
             chunk_id = str(payload.get("chunk_id") or item.get("id") or "")
             if not chunk_id:
                 continue
@@ -414,7 +452,7 @@ def rank_evidence_results(result_sets, limit, max_per_document):
     return selected
 
 
-def retrieve_evidence(queries):
+def retrieve_evidence(queries, excluded_source_types=None):
     if isinstance(queries, str):
         queries = [queries]
     queries = [query for query in queries if query]
@@ -433,6 +471,7 @@ def retrieve_evidence(queries):
             result_sets,
             current_app.config["RAG_TOP_K"],
             current_app.config["RAG_MAX_PER_DOCUMENT"],
+            excluded_source_types=excluded_source_types,
         )
     except (AIServiceError, httpx.HTTPError, KeyError, ValueError) as error:
         current_app.logger.warning("Knowledge retrieval unavailable: %s", type(error).__name__)
@@ -459,6 +498,32 @@ def retrieve_evidence(queries):
             }
         )
     return evidence
+
+
+def cached_evidence_translations(evidence):
+    chunk_ids = list(
+        dict.fromkeys(str(item.get("chunk_id") or "") for item in evidence)
+    )
+    chunk_ids = [chunk_id for chunk_id in chunk_ids if chunk_id]
+    if not chunk_ids:
+        return {}
+    placeholders = ", ".join(["%s"] * len(chunk_ids))
+    rows = fetch_all(
+        f"""
+        SELECT chunk_id, excerpt_ko
+        FROM candidate_evidence
+        WHERE chunk_id IN ({placeholders})
+          AND excerpt_ko IS NOT NULL
+          AND excerpt_ko <> ''
+        """,
+        chunk_ids,
+    )
+    translations = {}
+    for row in rows:
+        chunk_id = str(row.get("chunk_id") or "")
+        if chunk_id and chunk_id not in translations:
+            translations[chunk_id] = row["excerpt_ko"]
+    return translations
 
 
 def present_document(document):
@@ -550,11 +615,18 @@ def generate_candidates(encounter_id, stage):
 
     context, query = build_context(encounter_id, stage, sections)
     evidence_queries = build_evidence_queries(stage, context, query)
-    evidence = retrieve_evidence(evidence_queries)
+    include_critical_care = should_include_critical_care(stage, context, query)
+    excluded_source_types = (
+        set() if include_critical_care else {"critical_care_textbook"}
+    )
+    evidence = retrieve_evidence(
+        evidence_queries, excluded_source_types=excluded_source_types
+    )
     context["medical_evidence"] = evidence
     context["evidence_search_strategy"] = {
         "queries": evidence_queries,
         "selection": "multi-query diversified reranking",
+        "critical_care_included": include_critical_care,
     }
     llm = get_llm()
     model = getattr(llm, "model", current_app.config["LLM_MODEL"])
@@ -580,10 +652,28 @@ def generate_candidates(encounter_id, stage):
             ),
         )
     try:
-        candidates, generation_usage = llm.generate_candidates(
-            stage, context, current_app.config["SOAP_CANDIDATE_COUNT"]
-        )
-        translations, translation_usage = llm.translate_evidence(evidence)
+        translations = cached_evidence_translations(evidence)
+        untranslated_evidence = [
+            source for source in evidence if source["chunk_id"] not in translations
+        ]
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            generation_future = executor.submit(
+                llm.generate_candidates,
+                stage,
+                context,
+                current_app.config["SOAP_CANDIDATE_COUNT"],
+            )
+            translation_future = (
+                executor.submit(llm.translate_evidence, untranslated_evidence)
+                if untranslated_evidence
+                else None
+            )
+            candidates, generation_usage = generation_future.result()
+            if translation_future:
+                new_translations, translation_usage = translation_future.result()
+                translations.update(new_translations)
+            else:
+                translation_usage = {"prompt_tokens": 0, "completion_tokens": 0}
         for source in evidence:
             source["excerpt_ko"] = translations.get(source["chunk_id"])
         usage = {

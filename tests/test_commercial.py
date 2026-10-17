@@ -247,6 +247,52 @@ def test_closed_encounter_rejects_diagnostic_plan_changes(monkeypatch):
     assert response.get_json()["error"] == "encounter_closed"
 
 
+def test_diagnostic_plan_ignores_unselected_exam_types(monkeypatch):
+    app = Flask(__name__)
+    app.secret_key = "test-only"
+    app.register_blueprint(commercial.bp)
+    statements = []
+    monkeypatch.setattr(
+        commercial,
+        "_encounter",
+        lambda _encounter_id: encounter(workflow_stage="diagnostics"),
+    )
+    monkeypatch.setattr(
+        commercial,
+        "diagnostics_status",
+        lambda _encounter_id: ([], [], []),
+    )
+    monkeypatch.setattr(commercial, "transaction", nullcontext)
+    monkeypatch.setattr(
+        commercial,
+        "execute",
+        lambda sql, params=(): statements.append((sql, params)),
+    )
+    monkeypatch.setattr(commercial, "audit", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(commercial, "mark_soap_stages_stale", lambda *_args: None)
+    monkeypatch.setattr("app.workflow_state.invalidate_workflow", lambda *_args: None)
+    client = app.test_client()
+    with client.session_transaction() as session:
+        session["admin_id"] = "vet-id"
+        session["role"] = "veterinarian"
+
+    response = client.put(
+        "/api/encounters/encounter-1/diagnostic-plan",
+        json={
+            "items": [
+                {"exam_type": "echo", "status": ""},
+                {"exam_type": "xray", "status": "planned"},
+                {"exam_type": "lab", "status": ""},
+            ]
+        },
+    )
+
+    inserts = [params for sql, params in statements if "INSERT INTO diagnostic_requirements" in sql]
+    assert response.status_code == 200
+    assert len(inserts) == 1
+    assert inserts[0][2:4] == ("xray", "planned")
+
+
 def test_reviewed_diagnostic_requires_a_recorded_result(monkeypatch):
     app = Flask(__name__)
     app.secret_key = "test-only"

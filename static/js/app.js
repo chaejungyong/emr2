@@ -22,8 +22,6 @@ const state = {
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 
-const NOTEBOOKLM_URL = "https://notebook.google.com/";
-
 function escapeHtml(value) {
     return String(value ?? "")
         .replaceAll("&", "&amp;")
@@ -833,13 +831,18 @@ $("#new-encounter-button").addEventListener("click", () => {
     const input = $('#encounter-form [name="visit_at"]');
     const now = new Date(Date.now() - new Date().getTimezoneOffset() * 60000);
     input.value = now.toISOString().slice(0, 16);
-    $("#new-encounter-options").open = false;
+    $("#new-encounter-options").open = true;
     $("#patient-contact-form").classList.add("hidden");
     $("#encounter-workspace").classList.add("hidden");
     form.classList.remove("hidden");
     form.scrollIntoView({behavior: "smooth", block: "center"});
     requestAnimationFrame(() => form.elements.chief_complaint.focus());
 });
+$("#encounter-form").addEventListener("invalid", (event) => {
+    if (event.target.closest("#new-encounter-options")) {
+        $("#new-encounter-options").open = true;
+    }
+}, true);
 $('[data-cancel="encounter"]').addEventListener("click", () => {
     const form = $("#encounter-form");
     form.reset();
@@ -2159,19 +2162,6 @@ function renderSoap() {
                 ${evidenceHtml(candidate.evidence)}
             </div>
         `).join("");
-        const notebookLabel = {
-            A: "NotebookLM",
-            P: "NotebookLM",
-        }[section.stage];
-        const notebookLink = notebookLabel && section.unlocked ? `
-            <a
-                class="secondary notebooklm-link"
-                href="${NOTEBOOKLM_URL}"
-                target="_blank"
-                rel="noopener noreferrer"
-                title="환자정보를 자동 전송하지 않고 NotebookLM을 새 탭에서 엽니다."
-            >${notebookLabel} <span aria-hidden="true">↗</span></a>
-        ` : "";
         return `
             <article class="soap-step ${expanded ? "expanded" : "collapsed"} ${section.unlocked ? "" : "locked"} ${section.stage === "O" ? "objective-step" : ""}" data-stage="${section.stage}">
                 <button type="button" class="soap-step-header" aria-expanded="${expanded}">
@@ -2205,7 +2195,6 @@ function renderSoap() {
                     ` : ""}
                     <div class="soap-stage-actions">
                         <button class="secondary generate" ${section.unlocked && canClinicallyEdit ? "" : "disabled"}>${section.candidates.length ? "AI 초안 재생성" : "AI 초안 생성"}</button>
-                        ${notebookLink}
                     </div>
                     ${section.candidates.length ? `
                         <details class="candidates-fold" ${candidatesOpen ? "open" : ""}>
@@ -2313,6 +2302,15 @@ async function loadAdmin() {
             Qdrant ${status.qdrant.ok ? "정상" : "연결 안 됨"}<br>
             ${status.security_warnings.map((item) => `<span class="error">${escapeHtml(item)}</span>`).join("<br>")}
         `;
+        const previewSelect = $("#knowledge-preview-file");
+        const selectedSource = previewSelect.value;
+        previewSelect.innerHTML = status.knowledge_files.length
+            ? status.knowledge_files.map((file) => `<option value="${escapeHtml(file.source_key)}">${escapeHtml(file.source_key)}</option>`).join("")
+            : '<option value="">PDF가 없습니다</option>';
+        if (status.knowledge_files.some((file) => file.source_key === selectedSource)) {
+            previewSelect.value = selectedSource;
+        }
+        $("#knowledge-preview-button").disabled = !status.knowledge_files.length;
         renderJobs(jobs.items);
     } catch (error) {
         if (error.status !== 401) console.warn("Admin status unavailable", error);
@@ -2441,6 +2439,39 @@ async function requestIndex(type) {
 
 $("#incremental-index").addEventListener("click", () => requestIndex("incremental"));
 $("#full-index").addEventListener("click", () => requestIndex("full"));
+
+async function loadKnowledgePreview() {
+    const sourceKey = $("#knowledge-preview-file").value;
+    if (!sourceKey) return;
+    const button = $("#knowledge-preview-button");
+    const root = $("#knowledge-preview");
+    button.disabled = true;
+    root.innerHTML = '<p class="muted small">대표 페이지를 추출하는 중입니다.</p>';
+    try {
+        const preview = await api(`/api/admin/knowledge-preview?source_key=${encodeURIComponent(sourceKey)}`);
+        root.innerHTML = `
+            <div class="knowledge-preview-heading"><strong>${escapeHtml(preview.source_key)}</strong><span>${preview.page_count}쪽</span></div>
+            ${preview.pages.map((page) => `
+                <article class="knowledge-preview-page">
+                    <div class="knowledge-preview-meta">
+                        <strong>${page.page_number}쪽</strong>
+                        <span>${page.character_count}자 · 한글 ${page.hangul_count}자 · 가독 문자 ${Math.round(page.readable_ratio * 100)}%</span>
+                    </div>
+                    ${page.warnings.length
+                        ? `<ul class="knowledge-preview-warnings">${page.warnings.map((warning) => `<li>${escapeHtml(warning)}</li>`).join("")}</ul>`
+                        : '<p class="knowledge-preview-ok">자동 검사에서 뚜렷한 문제를 찾지 못했습니다.</p>'}
+                    <pre>${escapeHtml(page.text || "(추출된 텍스트 없음)")}${page.truncated ? "\n\n… 미리보기 생략" : ""}</pre>
+                </article>
+            `).join("")}`;
+    } catch (error) {
+        root.innerHTML = "";
+        handleError(error);
+    } finally {
+        button.disabled = false;
+    }
+}
+
+$("#knowledge-preview-button").addEventListener("click", loadKnowledgePreview);
 
 function handleError(error) {
     console.error(error);

@@ -22,7 +22,39 @@ def source_profile(display_name):
 
     name = str(display_name or "").strip()
     lowered = name.casefold()
-    if "ettinger" in lowered or "textbook of veterinary internal medicine" in lowered:
+    normalized_name = re.sub(r"[\W_]+", " ", lowered).strip()
+    if "small animal cardiovascular medicine" in normalized_name:
+        return {
+            "source_type": "cardiology_textbook",
+            "canonical_title": "Small Animal Cardiovascular Medicine",
+            "edition": "1st (1998)",
+            "volume_label": None,
+        }
+    if "clinical echocardiography of the dog and cat" in normalized_name:
+        return {
+            "source_type": "echocardiography_textbook",
+            "canonical_title": "Clinical Echocardiography of the Dog and Cat",
+            "edition": "1st (2016)",
+            "volume_label": None,
+        }
+    if "textbook of cardiovascular medicine in dogs and cats" in normalized_name:
+        return {
+            "source_type": "cardiology_textbook",
+            "canonical_title": "Textbook of Cardiovascular Medicine in Dogs and Cats",
+            "edition": "2023",
+            "volume_label": None,
+        }
+    if "manual of canine and feline cardiology" in normalized_name:
+        return {
+            "source_type": "cardiology_handbook",
+            "canonical_title": "Manual of Canine and Feline Cardiology",
+            "edition": "5th (2016)",
+            "volume_label": None,
+        }
+    if (
+        "ettinger" in normalized_name
+        or "textbook of veterinary internal medicine" in normalized_name
+    ):
         volume_match = re.match(r"\s*(\d+)\s*[._-]", name)
         volume = f"Volume {volume_match.group(1)}" if volume_match else None
         return {
@@ -31,7 +63,7 @@ def source_profile(display_name):
             "edition": "8th",
             "volume_label": volume,
         }
-    if "critical care" in lowered:
+    if "critical care" in normalized_name:
         return {
             "source_type": "critical_care_textbook",
             "canonical_title": "Small Animal Critical Care Medicine",
@@ -105,6 +137,108 @@ def normalize_text(text):
     value = re.sub(r"[ \t]+", " ", value)
     value = re.sub(r"\n{3,}", "\n\n", value)
     return value.strip()
+
+
+def extraction_quality(text):
+    """Return lightweight signals for a human PDF extraction review."""
+
+    raw = text or ""
+    normalized = normalize_text(raw)
+    total = len(raw)
+    replacement_count = raw.count("\ufffd")
+    control_count = sum(
+        1
+        for character in raw
+        if unicodedata.category(character) in {"Cc", "Cs"}
+        and character not in "\n\r\t"
+    )
+    private_use_count = sum(
+        1 for character in raw if unicodedata.category(character) == "Co"
+    )
+    visible_count = sum(
+        1
+        for character in raw
+        if character.isspace()
+        or not unicodedata.category(character).startswith("C")
+    )
+    hangul_count = sum(1 for character in normalized if "가" <= character <= "힣")
+    whitespace_count = sum(1 for character in normalized if character.isspace())
+    readable_ratio = round(visible_count / total, 4) if total else 0.0
+    warnings = []
+    if len(normalized) < 80:
+        warnings.append("추출 텍스트가 너무 짧습니다. 스캔 페이지 또는 글꼴 매핑 문제를 확인하세요.")
+    if total and replacement_count / total >= 0.005:
+        warnings.append("유니코드 대체문자가 많아 글꼴 매핑이 손상됐을 수 있습니다.")
+    if control_count:
+        warnings.append("표시할 수 없는 제어문자가 포함되어 있습니다.")
+    if private_use_count:
+        warnings.append("사설 영역 문자가 포함되어 있어 원문과 대조가 필요합니다.")
+    if len(normalized) >= 200 and whitespace_count / len(normalized) < 0.01:
+        warnings.append("단어 간 공백이 거의 없어 문장 경계가 손상됐을 수 있습니다.")
+    return {
+        "character_count": len(normalized),
+        "hangul_count": hangul_count,
+        "replacement_count": replacement_count,
+        "control_count": control_count,
+        "private_use_count": private_use_count,
+        "readable_ratio": readable_ratio,
+        "warnings": warnings,
+    }
+
+
+def preview_pdf(path, max_characters=6000):
+    """Extract representative pages without modifying the knowledge index."""
+
+    try:
+        if path.stat().st_size > current_app.config["MAX_PDF_BYTES"]:
+            raise IndexingError("허용된 PDF 파일 크기를 초과했습니다.")
+        reader = PdfReader(str(path), strict=False)
+        page_count = len(reader.pages)
+        if page_count > current_app.config["MAX_PDF_PAGES"]:
+            raise IndexingError("허용된 PDF 페이지 수를 초과했습니다.")
+        if reader.is_encrypted:
+            try:
+                reader.decrypt("")
+            except Exception as error:
+                raise IndexingError("암호화된 PDF는 처리할 수 없습니다.") from error
+        if not page_count:
+            raise IndexingError("PDF에 페이지가 없습니다.")
+
+        page_indexes = sorted({0, page_count // 2, page_count - 1})
+        pages = []
+        for page_index in page_indexes:
+            try:
+                raw_text = reader.pages[page_index].extract_text() or ""
+                text = normalize_text(raw_text)
+                quality = extraction_quality(raw_text)
+                pages.append(
+                    {
+                        "page_number": page_index + 1,
+                        "text": text[:max_characters],
+                        "truncated": len(text) > max_characters,
+                        **quality,
+                    }
+                )
+            except Exception as error:
+                pages.append(
+                    {
+                        "page_number": page_index + 1,
+                        "text": "",
+                        "truncated": False,
+                        "character_count": 0,
+                        "hangul_count": 0,
+                        "replacement_count": 0,
+                        "control_count": 0,
+                        "private_use_count": 0,
+                        "readable_ratio": 0.0,
+                        "warnings": [f"텍스트 추출 실패: {error}"],
+                    }
+                )
+        return {"page_count": page_count, "pages": pages}
+    except IndexingError:
+        raise
+    except Exception as error:
+        raise IndexingError(f"PDF를 열 수 없습니다: {error}") from error
 
 
 def split_long_text(text, target=3200, overlap=400):

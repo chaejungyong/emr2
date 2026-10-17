@@ -392,9 +392,14 @@ def save_diagnostic_plan(encounter_id):
         seen = set()
         for item in items:
             exam_type = item.get("exam_type")
-            status = item.get("status") or "planned"
+            status = item.get("status")
             reason = clean_text(item.get("reason"), 500)
-            if exam_type not in EXAM_TYPES or exam_type in seen or status not in DIAGNOSTIC_STATUSES:
+            if exam_type not in EXAM_TYPES or exam_type in seen:
+                raise ValueError("invalid_diagnostic_item")
+            if not status:
+                seen.add(exam_type)
+                continue
+            if status not in DIAGNOSTIC_STATUSES:
                 raise ValueError("invalid_diagnostic_item")
             if status in {"reviewed", "not_required"} and session.get("role") != "veterinarian":
                 return jsonify({"error": "permission_denied"}), 403

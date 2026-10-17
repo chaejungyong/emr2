@@ -4,7 +4,7 @@ from werkzeug.security import generate_password_hash
 from .ai import get_vector_store
 from .auth import require_roles
 from .db import audit, execute, fetch_all, fetch_one, new_id, transaction
-from .indexing import scan_pdfs, source_key
+from .indexing import IndexingError, preview_pdf, scan_pdfs, source_key
 
 
 bp = Blueprint("admin", __name__, url_prefix="/api/admin")
@@ -155,6 +155,21 @@ def status():
             "security_warnings": security_warnings,
         }
     )
+
+
+@bp.get("/knowledge-preview")
+@require_roles("veterinarian")
+def knowledge_preview():
+    requested_key = str(request.args.get("source_key") or "")
+    paths = {source_key(path): path for path in scan_pdfs()}
+    path = paths.get(requested_key)
+    if not path:
+        return jsonify({"error": "knowledge_file_not_found"}), 404
+    try:
+        preview = preview_pdf(path)
+    except IndexingError as error:
+        return jsonify({"error": "pdf_preview_failed", "message": str(error)}), 422
+    return jsonify({"source_key": requested_key, **preview})
 
 
 @bp.get("/index-jobs")
