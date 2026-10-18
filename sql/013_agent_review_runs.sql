@@ -1,0 +1,21 @@
+CREATE TABLE IF NOT EXISTS agent_review_runs (
+    id CHAR(36) PRIMARY KEY,
+    encounter_id CHAR(36) NOT NULL,
+    status ENUM('running', 'completed', 'failed') NOT NULL DEFAULT 'running',
+    provider VARCHAR(80) NOT NULL,
+    model VARCHAR(180) NOT NULL,
+    prompt_version VARCHAR(80) NOT NULL,
+    input_snapshot LONGTEXT NULL,
+    output_json LONGTEXT NULL,
+    evidence_json LONGTEXT NULL,
+    error_message TEXT NULL,
+    latency_ms INT NULL,
+    input_tokens INT NULL,
+    output_tokens INT NULL,
+    created_by CHAR(36) NULL,
+    created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    completed_at DATETIME(6) NULL,
+    CONSTRAINT fk_agent_review_encounter FOREIGN KEY (encounter_id) REFERENCES encounters(id) ON DELETE CASCADE,
+    CONSTRAINT fk_agent_review_admin FOREIGN KEY (created_by) REFERENCES admins(id) ON DELETE SET NULL,
+    INDEX idx_agent_review_encounter_created (encounter_id, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

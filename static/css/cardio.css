@@ -272,3 +272,20 @@ body { overflow: hidden; }
 .knowledge-preview-page pre { overflow: auto; max-width: 100%; max-height: 260px; margin: .55rem 0 0; padding: .65rem; border-radius: 8px; background: #f7faf8; font: .72rem/1.55 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; }
 .knowledge-preview-warnings { margin: .5rem 0 0; padding-left: 1.2rem; color: var(--danger); font-size: .72rem; }
 .knowledge-preview-ok { margin: .5rem 0 0; color: var(--teal); font-size: .72rem; }
+.agent-review-panel { display: grid; gap: .85rem; }
+.agent-review-panel > button { justify-self: start; }
+.agent-review-result { display: grid; gap: .8rem; }
+.agent-review-summary { padding: .85rem; border-left: 4px solid var(--teal); border-radius: 8px; background: var(--teal-soft); }
+.agent-review-summary p { margin: .35rem 0 0; white-space: pre-wrap; }
+.agent-review-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .75rem; }
+.agent-review-grid section { padding: .8rem; border: 1px solid var(--line); border-radius: 9px; background: #fff; }
+.agent-review-grid h3 { margin: 0 0 .45rem; font-size: .85rem; color: var(--teal-dark); }
+.agent-review-grid ul { margin: 0; padding-left: 1.15rem; }
+.agent-review-grid li { margin: .25rem 0; line-height: 1.5; }
+.agent-review-evidence { display: grid; gap: .4rem; margin-top: .6rem; }
+.agent-review-evidence p { display: grid; gap: .15rem; margin: 0; padding: .55rem; border-radius: 7px; background: #f5f8f7; }
+.agent-review-evidence span { color: var(--muted); font-size: .72rem; }
+
+@media (max-width: 760px) {
+    .agent-review-grid { grid-template-columns: 1fr; }
+}

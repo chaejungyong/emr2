@@ -7,6 +7,7 @@ import pytest
 from flask import Flask
 from PIL import Image
 
+from app.agent import build_review_signals, sanitize_agent_context
 from app.cardio import clean_cardiac_payload, exam_comparison
 from app.ai import (
     AIServiceError,
@@ -84,6 +85,70 @@ def test_mock_llm_returns_exact_candidate_count():
     )
     assert len(candidates) == 1
     assert all("기침" in candidate for candidate in candidates)
+    assert usage["prompt_tokens"] == 0
+
+
+def test_readonly_agent_rules_report_missing_data_and_prior_changes():
+    signals = build_review_signals(
+        {
+            "patient": {"weight_kg": 4.0},
+            "encounter": {"physical_exam": "심잡음 IV/VI"},
+            "medication_safety": {
+                "current_medications": "없음",
+                "allergies": "없음",
+            },
+            "cardiac_exam": {
+                "body_weight_kg": 4.2,
+                "heart_rate_bpm": 130,
+                "respiratory_rate_rpm": 28,
+                "systolic_bp_mmhg": 125,
+                "la_ao": None,
+                "lviddn": None,
+            },
+            "diagnostic_plan": [{"exam_type": "xray", "status": "completed"}],
+            "prior_cardiac_trends": [
+                {"body_weight_kg": 4.0, "heart_rate_bpm": 120}
+            ],
+        }
+    )
+    assert "검토가 끝나지 않은 검사: XRAY" in signals["priority_checks"]
+    assert any("심초음파 측정값" in item for item in signals["questions"])
+    assert any("심박수: 이전 120" in item for item in signals["observations"])
+    assert any("환자 기본 체중" in item for item in signals["observations"])
+
+
+def test_readonly_agent_context_removes_direct_record_identifiers():
+    sanitized = sanitize_agent_context(
+        {
+            "patient": {
+                "name": "테스트견",
+                "chart_number": "C-000007",
+                "species": "Canine",
+            },
+            "prior_confirmed_soap": [
+                {"encounter_id": "encounter-1", "sections": {"S": "기침"}}
+            ],
+            "medical": {"diagnosis_name": "MMVD"},
+        }
+    )
+    assert sanitized["patient"] == {"species": "Canine"}
+    assert "encounter_id" not in sanitized["prior_confirmed_soap"][0]
+    assert sanitized["medical"]["diagnosis_name"] == "MMVD"
+
+
+def test_mock_readonly_agent_only_returns_review_fields():
+    review, usage = MockLLM.generate_clinical_review(
+        {
+            "rule_signals": {
+                "priority_checks": ["체중 확인"],
+                "questions": ["Echo를 시행합니까?"],
+                "observations": [],
+            }
+        }
+    )
+    assert review["priority_checks"] == ["체중 확인"]
+    assert review["questions"] == ["Echo를 시행합니까?"]
+    assert "diagnosis" not in review
     assert usage["prompt_tokens"] == 0
 
 
@@ -528,6 +593,41 @@ def test_openai_adapter_validates_candidate_count(monkeypatch):
     client = OpenAICompatibleLLM("https://example.test", "key", "model", 5)
     candidates, usage = client.generate_candidates("A", {}, 2)
     assert candidates == ["첫째", "둘째"]
+    assert usage["completion_tokens"] == 20
+
+
+def test_openai_adapter_validates_readonly_clinical_review(monkeypatch):
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        @staticmethod
+        def json():
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "summary": "자료가 부족하여 병기 확정은 어렵습니다.",
+                                    "priority_checks": ["Echo 측정값 확인"],
+                                    "questions": ["Echo를 시행합니까?"],
+                                    "observations": ["심잡음 IV/VI"],
+                                    "evidence_considerations": ["영상과 임상 소견을 함께 검토"],
+                                },
+                                ensure_ascii=False,
+                            )
+                        }
+                    }
+                ],
+                "usage": {"prompt_tokens": 30, "completion_tokens": 20},
+            }
+
+    monkeypatch.setattr("app.ai.httpx.post", lambda *args, **kwargs: Response())
+    client = OpenAICompatibleLLM("https://example.test", "key", "model", 5)
+    review, usage = client.generate_clinical_review({"clinical_context": {}})
+    assert review["priority_checks"] == ["Echo 측정값 확인"]
+    assert review["questions"] == ["Echo를 시행합니까?"]
     assert usage["completion_tokens"] == 20
 
 

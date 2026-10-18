@@ -22,6 +22,7 @@ def create_app(config_object=Config):
         db.run_migrations(app)
 
     from .admin import bp as admin_bp
+    from .agent import bp as agent_bp
     from .auth import bp as auth_bp
     from .auth import init_admin, install_guards
     from .cardio import bp as cardio_bp
@@ -31,6 +32,7 @@ def create_app(config_object=Config):
     from .workflow import bp as workflow_bp
 
     app.register_blueprint(auth_bp)
+    app.register_blueprint(agent_bp)
     app.register_blueprint(clinical_bp)
     app.register_blueprint(cardio_bp)
     app.register_blueprint(workflow_bp)

@@ -6,6 +6,7 @@ const state = {
     patient: null,
     encounter: null,
     soap: null,
+    agentReview: null,
     cardiacComparison: null,
     workflow: {ecg: null, lab: null, prescription: null, billing: null, echoVideos: []},
     trends: [],
@@ -718,6 +719,7 @@ async function selectPatient(patientId) {
     state.revisions = [];
     state.encounter = null;
     state.soap = null;
+    state.agentReview = null;
     state.cardiacComparison = null;
     state.workflow = {ecg: null, lab: null, prescription: null, billing: null, echoVideos: []};
     state.commercial = {workflow: null, diagnosticPlan: [], education: null, prescription: null, invoice: null};
@@ -885,7 +887,7 @@ $("#encounter-form").addEventListener("submit", async (event) => {
 });
 
 async function openEncounter(encounterId) {
-    const [encounter, soap, cardiacComparison, trends, monitoring, revisions, ecg, lab, prescription, billing, echoVideos, workflow, diagnosticPlan, education, structuredPrescription, invoice] = await Promise.all([
+    const [encounter, soap, cardiacComparison, trends, monitoring, revisions, ecg, lab, prescription, billing, echoVideos, workflow, diagnosticPlan, education, structuredPrescription, invoice, agentReview] = await Promise.all([
         api(`/api/encounters/${encounterId}`),
         api(`/api/encounters/${encounterId}/soap`),
         api(`/api/encounters/${encounterId}/cardiac-exam`),
@@ -902,9 +904,13 @@ async function openEncounter(encounterId) {
         api(`/api/encounters/${encounterId}/education`),
         api(`/api/encounters/${encounterId}/structured-prescription`),
         api(`/api/encounters/${encounterId}/invoice`),
+        state.user?.role === "veterinarian"
+            ? api(`/api/encounters/${encounterId}/agent-review`)
+            : Promise.resolve({review: null}),
     ]);
     state.encounter = encounter;
     state.soap = soap;
+    state.agentReview = agentReview.review;
     state.cardiacComparison = cardiacComparison;
     state.trends = trends.items;
     state.monitoring = monitoring.items;
@@ -933,6 +939,7 @@ async function openEncounter(encounterId) {
     renderSoap();
     populateEncounterEditForm();
     renderWorkflow();
+    renderAgentReview();
     renderCardioSummary();
     renderPatientCardiacBadges();
     renderDiagnostics();
@@ -999,6 +1006,59 @@ function renderWorkflow() {
     $("#encounter-edit-form").elements.physical_exam.disabled = closed || state.user?.role === "staff";
     $("#save-visit-button").disabled = closed || state.user?.role !== "veterinarian";
 }
+
+function agentReviewList(title, items = []) {
+    if (!items.length) return "";
+    return `<section><h3>${escapeHtml(title)}</h3><ul>${items.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul></section>`;
+}
+
+function renderAgentReview() {
+    const panel = $("#agent-review-panel");
+    if (!panel) return;
+    const allowed = state.user?.role === "veterinarian";
+    panel.classList.toggle("hidden", !allowed);
+    if (!allowed) return;
+    const root = $("#agent-review-result");
+    const review = state.agentReview;
+    if (!review || review.status !== "completed") {
+        root.innerHTML = '<p class="empty-copy">아직 실행한 진료 점검이 없습니다.</p>';
+        return;
+    }
+    const result = review.result || {};
+    const evidence = review.evidence || [];
+    root.innerHTML = `
+        <div class="agent-review-summary"><strong>점검 요약</strong><p>${escapeHtml(result.summary || "요약 없음")}</p></div>
+        <div class="agent-review-grid">
+            ${agentReviewList("필수 확인", result.priority_checks)}
+            ${agentReviewList("수의사 확인 질문", result.questions)}
+            ${agentReviewList("관찰 및 변화", result.observations)}
+            ${agentReviewList("근거 기반 검토", result.evidence_considerations)}
+        </div>
+        ${evidence.length ? `<details class="evidence"><summary>참조 근거 ${evidence.length}개</summary><div class="agent-review-evidence">${evidence.map((item) => {
+            const pages = item.page_start ? ` p.${item.page_start}${item.page_end && item.page_end !== item.page_start ? `–${item.page_end}` : ""}` : "";
+            return `<p><strong>${escapeHtml(item.document_name || "문서")}${escapeHtml(pages)}</strong>${item.source_heading ? `<span>${escapeHtml(item.source_heading)}</span>` : ""}</p>`;
+        }).join("")}</div></details>` : ""}
+        <p class="muted small">${escapeHtml(formatDate(review.completed_at || review.created_at, true))} · ${escapeHtml(review.model)}</p>
+    `;
+}
+
+$("#generate-agent-review").addEventListener("click", async (event) => {
+    if (!state.encounter) return toast("먼저 진료를 선택하세요.", "error");
+    const button = event.currentTarget;
+    button.disabled = true;
+    button.textContent = "진료 점검 중…";
+    try {
+        const data = await api(`/api/encounters/${state.encounter.id}/agent-review`, {method: "POST"});
+        state.agentReview = data.review;
+        renderAgentReview();
+        toast("읽기 전용 AI 진료 점검을 완료했습니다.");
+    } catch (error) {
+        handleError(error);
+    } finally {
+        button.disabled = false;
+        button.textContent = "진료 점검 다시 실행";
+    }
+});
 
 async function refreshCommercialState() {
     if (!state.encounter) return;
