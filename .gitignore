@@ -22,6 +22,8 @@ storage/echo-videos/*
 !storage/echo-videos/.gitkeep
 storage/knowledge/inbox/*
 !storage/knowledge/inbox/.gitkeep
+storage/knowledge/staging/*
+!storage/knowledge/staging/.gitkeep
 
 # 개인 장비/원격 접속 정보 문서 (Synology Drive에 별도 보관)
 docs/private/

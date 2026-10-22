@@ -274,6 +274,10 @@ body { overflow: hidden; }
 .knowledge-preview-ok { margin: .5rem 0 0; color: var(--teal); font-size: .72rem; }
 .agent-review-panel { display: grid; gap: .85rem; }
 .agent-review-panel > button { justify-self: start; }
+.agent-review-progress { display: flex; align-items: center; gap: .55rem; margin: 0; color: var(--teal-dark); font-size: .78rem; font-weight: 750; }
+.agent-review-progress::before { width: .8rem; height: .8rem; border: 2px solid #b9d8d0; border-top-color: var(--teal); border-radius: 50%; content: ""; animation: agent-review-spin .8s linear infinite; }
+@keyframes agent-review-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .agent-review-progress::before { animation: none; } }
 .agent-review-result { display: grid; gap: .8rem; }
 .agent-review-summary { padding: .85rem; border-left: 4px solid var(--teal); border-radius: 8px; background: var(--teal-soft); }
 .agent-review-summary p { margin: .35rem 0 0; white-space: pre-wrap; }

@@ -18,6 +18,7 @@ const state = {
     activeView: "today",
     selectedCandidates: {},
     pollTimer: null,
+    agentReviewPending: null,
 };
 
 const $ = (selector, root = document) => root.querySelector(selector);
@@ -1019,11 +1020,30 @@ function renderAgentReview() {
     panel.classList.toggle("hidden", !allowed);
     if (!allowed) return;
     const root = $("#agent-review-result");
+    const button = $("#generate-agent-review");
+    const progress = $("#agent-review-progress");
+    const pending = state.agentReviewPending;
+    if (pending) {
+        const elapsed = Math.max(1, Math.floor((Date.now() - pending.startedAt) / 1000));
+        const isCurrentEncounter = pending.encounterId === state.encounter?.id;
+        button.disabled = true;
+        button.textContent = isCurrentEncounter ? `점검 중… ${elapsed}초` : "다른 진료 점검 중";
+        progress.classList.remove("hidden");
+        progress.textContent = isCurrentEncounter
+            ? "서버에서 검사값과 문헌을 확인하고 있습니다. 다른 업무를 해도 됩니다."
+            : "다른 진료의 점검이 서버에서 진행 중입니다. 완료되면 알려드립니다.";
+        return;
+    }
+    button.disabled = false;
+    progress.classList.add("hidden");
+    progress.textContent = "";
     const review = state.agentReview;
     if (!review || review.status !== "completed") {
+        button.textContent = "진료 점검 실행";
         root.innerHTML = '<p class="empty-copy">아직 실행한 진료 점검이 없습니다.</p>';
         return;
     }
+    button.textContent = "진료 점검 다시 실행";
     const result = review.result || {};
     const evidence = review.evidence || [];
     root.innerHTML = `
@@ -1042,21 +1062,26 @@ function renderAgentReview() {
     `;
 }
 
-$("#generate-agent-review").addEventListener("click", async (event) => {
+$("#generate-agent-review").addEventListener("click", async () => {
     if (!state.encounter) return toast("먼저 진료를 선택하세요.", "error");
-    const button = event.currentTarget;
-    button.disabled = true;
-    button.textContent = "진료 점검 중…";
+    const encounterId = state.encounter.id;
+    state.agentReviewPending = {encounterId, startedAt: Date.now()};
+    renderAgentReview();
+    const progressTimer = setInterval(renderAgentReview, 1000);
     try {
-        const data = await api(`/api/encounters/${state.encounter.id}/agent-review`, {method: "POST"});
-        state.agentReview = data.review;
-        renderAgentReview();
+        const data = await api(`/api/encounters/${encounterId}/agent-review`, {method: "POST"});
+        if (state.encounter?.id === encounterId) {
+            state.agentReview = data.review;
+        }
         toast("읽기 전용 AI 진료 점검을 완료했습니다.");
     } catch (error) {
         handleError(error);
     } finally {
-        button.disabled = false;
-        button.textContent = "진료 점검 다시 실행";
+        clearInterval(progressTimer);
+        if (state.agentReviewPending?.encounterId === encounterId) {
+            state.agentReviewPending = null;
+        }
+        renderAgentReview();
     }
 });
 

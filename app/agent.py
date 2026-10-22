@@ -8,9 +8,9 @@ from .ai import AIServiceError, get_llm
 from .auth import require_roles
 from .db import audit, execute, fetch_one, new_id, transaction
 from .soap import (
+    STAGES,
     build_context,
     build_evidence_queries,
-    ensure_document,
     retrieve_evidence,
     section_rows,
 )
@@ -180,6 +180,25 @@ def present_run(row):
     }
 
 
+def load_review_sections(encounter_id):
+    """Load SOAP state without creating or changing clinical records."""
+
+    document = fetch_one(
+        "SELECT id FROM soap_documents WHERE encounter_id=%s", (encounter_id,)
+    )
+    if document:
+        return section_rows(document["id"])
+    return {
+        stage: {
+            "stage": stage,
+            "status": "draft",
+            "current_text": None,
+            "diagnosis_name": None,
+        }
+        for stage in STAGES
+    }
+
+
 @bp.get("/encounters/<encounter_id>/agent-review")
 @require_roles("veterinarian")
 def get_agent_review(encounter_id):
@@ -195,10 +214,9 @@ def get_agent_review(encounter_id):
 @bp.post("/encounters/<encounter_id>/agent-review")
 @require_roles("veterinarian")
 def generate_agent_review(encounter_id):
-    document = ensure_document(encounter_id)
-    if not document:
+    if not fetch_one("SELECT id FROM encounters WHERE id=%s", (encounter_id,)):
         return jsonify({"error": "encounter_not_found"}), 404
-    sections = section_rows(document["id"])
+    sections = load_review_sections(encounter_id)
     context, base_query = build_context(encounter_id, "A", sections)
     context = sanitize_agent_context(context)
     queries = list(

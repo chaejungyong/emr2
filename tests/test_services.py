@@ -3,11 +3,16 @@ import json
 from contextlib import nullcontext
 from pathlib import Path
 
+import httpx
 import pytest
 from flask import Flask
 from PIL import Image
 
-from app.agent import build_review_signals, sanitize_agent_context
+from app.agent import (
+    build_review_signals,
+    load_review_sections,
+    sanitize_agent_context,
+)
 from app.cardio import clean_cardiac_payload, exam_comparison
 from app.ai import (
     AIServiceError,
@@ -62,6 +67,8 @@ def test_clinical_forms_keep_independent_submit_controls():
     assert javascript.count('name="amount" type="number" min="1" max="${invoice.paid_amount}" step="1"') == 1
     assert '$("#new-encounter-options").open = true;' in javascript
     assert 'addEventListener("invalid"' in javascript
+    assert 'id="agent-review-progress"' in html
+    assert "다른 업무를 해도 됩니다." in javascript
 
 
 def test_api_url_accepts_root_or_v1_base():
@@ -134,6 +141,42 @@ def test_readonly_agent_context_removes_direct_record_identifiers():
     assert sanitized["patient"] == {"species": "Canine"}
     assert "encounter_id" not in sanitized["prior_confirmed_soap"][0]
     assert sanitized["medical"]["diagnosis_name"] == "MMVD"
+
+
+def test_readonly_agent_does_not_create_soap_document(monkeypatch):
+    queries = []
+    monkeypatch.setattr(
+        "app.agent.fetch_one",
+        lambda sql, _params=(): queries.append(sql) or None,
+    )
+    monkeypatch.setattr(
+        "app.agent.execute",
+        lambda *_args, **_kwargs: pytest.fail("clinical record write attempted"),
+    )
+
+    sections = load_review_sections("encounter-id")
+
+    assert set(sections) == {"S", "O", "A", "P"}
+    assert all(item["status"] == "draft" for item in sections.values())
+    assert len(queries) == 1
+    assert "SELECT id FROM soap_documents" in queries[0]
+
+
+def test_readonly_agent_endpoint_is_veterinarian_only():
+    from app import agent
+
+    app = Flask(__name__)
+    app.secret_key = "test-only"
+    app.register_blueprint(agent.bp)
+    client = app.test_client()
+    with client.session_transaction() as session:
+        session["admin_id"] = "staff-1"
+        session["role"] = "staff"
+
+    response = client.post("/api/encounters/encounter-id/agent-review")
+
+    assert response.status_code == 403
+    assert response.get_json()["error"] == "permission_denied"
 
 
 def test_mock_readonly_agent_only_returns_review_fields():
@@ -631,6 +674,18 @@ def test_openai_adapter_validates_readonly_clinical_review(monkeypatch):
     assert usage["completion_tokens"] == 20
 
 
+def test_openai_adapter_reports_clinical_review_rate_limit(monkeypatch):
+    response = httpx.Response(
+        429,
+        request=httpx.Request("POST", "https://example.test/v1/chat/completions"),
+    )
+    monkeypatch.setattr("app.ai.httpx.post", lambda *args, **kwargs: response)
+    client = OpenAICompatibleLLM("https://example.test", "key", "model", 5)
+
+    with pytest.raises(AIServiceError, match="요청 한도 또는 사용량 한도"):
+        client.generate_clinical_review({"clinical_context": {}})
+
+
 def test_openai_adapter_translates_evidence_to_korean(monkeypatch):
     class Response:
         def raise_for_status(self):
@@ -787,6 +842,70 @@ def test_image_validator_accepts_png_and_rejects_fake_file():
     assert (mime, extension) == ("image/png", ".png")
     with pytest.raises(ValueError):
         detect_image(b"\x89PNG\r\n\x1a\nnot-an-image")
+
+
+def test_xray_upload_persists_valid_image_and_reading(monkeypatch, tmp_path):
+    from app import clinical, workflow_state
+
+    app = Flask(__name__)
+    app.secret_key = "test-only"
+    app.config.update(XRAY_ROOT=tmp_path, MAX_XRAY_BYTES=1024 * 1024)
+    app.register_blueprint(clinical.bp)
+    stored = {}
+
+    def fake_fetch_one(sql, _params=()):
+        if "SELECT id, workflow_stage FROM encounters" in sql:
+            return {"id": "encounter-1", "workflow_stage": "diagnostics"}
+        if "COUNT(*) AS count FROM xray_assets" in sql:
+            return {"count": 0}
+        if "SELECT * FROM xray_assets WHERE id" in sql:
+            return stored or None
+        return None
+
+    def fake_execute(sql, params=()):
+        if "INSERT INTO xray_assets" in sql:
+            fields = (
+                "id", "encounter_id", "storage_key", "original_name", "mime_type",
+                "size_bytes", "sha256", "taken_at", "body_region", "reading_text",
+            )
+            stored.update(dict(zip(fields, params)))
+            stored["created_at"] = "2026-10-20T10:00:00"
+
+    monkeypatch.setattr(clinical, "fetch_one", fake_fetch_one)
+    monkeypatch.setattr(clinical, "execute", fake_execute)
+    monkeypatch.setattr(clinical, "new_id", lambda: "xray-1")
+    monkeypatch.setattr(clinical, "transaction", nullcontext)
+    monkeypatch.setattr(clinical, "audit", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        clinical, "record_clinical_revision", lambda *_args, **_kwargs: None
+    )
+    monkeypatch.setattr(
+        clinical, "mark_soap_stages_stale", lambda *_args, **_kwargs: None
+    )
+    monkeypatch.setattr(
+        workflow_state, "invalidate_diagnostic_review", lambda *_args: "completed"
+    )
+
+    image = io.BytesIO()
+    Image.new("RGB", (8, 8), "white").save(image, format="PNG")
+    client = app.test_client()
+    with client.session_transaction() as session:
+        session["admin_id"] = "vet-1"
+        session["role"] = "veterinarian"
+    response = client.post(
+        "/api/encounters/encounter-1/xrays",
+        data={
+            "file": (io.BytesIO(image.getvalue()), "thorax.png"),
+            "body_region": "흉부",
+            "reading_text": "심장 음영 증가",
+        },
+        content_type="multipart/form-data",
+    )
+
+    assert response.status_code == 201
+    assert response.get_json()["reading_text"] == "심장 음영 증가"
+    assert stored["storage_key"] == "encounter-1/xray-1.png"
+    assert (tmp_path / stored["storage_key"]).is_file()
 
 
 def test_encounter_fields_stale_only_dependent_soap_stages():
@@ -1236,6 +1355,63 @@ def test_echo_video_type_is_detected_from_bytes_not_filename():
     assert _video_type(b"\x1a\x45\xdf\xa3" + b"0" * 20) == ("video/webm", ".webm")
     with pytest.raises(ValueError, match="unsupported_video"):
         _video_type(b"not-a-video")
+
+
+def test_echo_video_upload_persists_detected_mp4(monkeypatch, tmp_path):
+    from app import workflow
+
+    app = Flask(__name__)
+    app.secret_key = "test-only"
+    app.config.update(
+        ECHO_VIDEO_ROOT=tmp_path,
+        MAX_ECHO_VIDEO_BYTES=1024 * 1024,
+    )
+    app.register_blueprint(workflow.bp)
+    stored = {}
+
+    def fake_fetch_one(sql, _params=()):
+        if "FROM encounters" in sql:
+            return {
+                "id": "encounter-1",
+                "patient_id": "patient-1",
+                "workflow_stage": "diagnostics",
+            }
+        if "COUNT(*) AS count FROM echo_video_assets" in sql:
+            return {"count": 0}
+        if "SELECT * FROM echo_video_assets WHERE id" in sql:
+            return stored or None
+        return None
+
+    def fake_execute(sql, params=()):
+        if "INSERT INTO echo_video_assets" in sql:
+            fields = (
+                "id", "encounter_id", "storage_key", "original_name", "mime_type",
+                "size_bytes", "sha256", "recorded_at", "note",
+            )
+            stored.update(dict(zip(fields, params)))
+            stored["created_at"] = "2026-10-20T10:00:00"
+
+    monkeypatch.setattr(workflow, "fetch_one", fake_fetch_one)
+    monkeypatch.setattr(workflow, "execute", fake_execute)
+    monkeypatch.setattr(workflow, "new_id", lambda: "echo-1")
+    monkeypatch.setattr(workflow, "transaction", nullcontext)
+    monkeypatch.setattr(workflow, "audit", lambda *_args, **_kwargs: None)
+    video = b"\x00\x00\x00\x18ftypisom" + b"0" * 32
+
+    response = app.test_client().post(
+        "/api/encounters/encounter-1/echo-videos",
+        data={
+            "file": (io.BytesIO(video), "echo.mp4"),
+            "note": "우측 흉골 단축상",
+        },
+        content_type="multipart/form-data",
+    )
+
+    assert response.status_code == 201
+    assert response.get_json()["mime_type"] == "video/mp4"
+    assert "storage_key" not in response.get_json()
+    assert stored["storage_key"] == "encounter-1/echo-1.mp4"
+    assert (tmp_path / stored["storage_key"]).is_file()
 
 
 def test_appointment_create_persists_patient_time_and_purpose(monkeypatch):
