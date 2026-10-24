@@ -14,8 +14,10 @@ const state = {
     revisions: [],
     appointments: [],
     dashboard: null,
-    commercial: {workflow: null, diagnosticPlan: [], education: null, prescription: null, invoice: null},
+    commercial: {workflow: null, diagnosticPlan: [], education: null, prescription: null, invoice: null, invoiceSuggestions: []},
     activeView: "today",
+    activeDiagnosticTab: "echo",
+    focusMode: true,
     selectedCandidates: {},
     pollTimer: null,
     agentReviewPending: null,
@@ -180,6 +182,108 @@ async function api(path, options = {}) {
     return data;
 }
 
+const autosaveJobs = new Map();
+const failedAutosaves = new Map();
+let autosaveError = "";
+const invalidAutosaves = new Map();
+
+function setAutosaveIndicator(mode, message) {
+    const indicator = $("#autosave-indicator");
+    if (!indicator) return;
+    indicator.className = `autosave-indicator ${mode}`;
+    indicator.textContent = message;
+    const manualSave = $("#save-visit-button");
+    if (manualSave) manualSave.classList.toggle("hidden", mode === "saved");
+}
+
+function refreshAutosaveIndicator() {
+    const jobs = [...autosaveJobs.values()];
+    if (jobs.some((job) => job.promise)) {
+        setAutosaveIndicator("saving", "저장 중…");
+    } else if (jobs.length) {
+        setAutosaveIndicator("dirty", "저장 대기 중");
+    } else if (invalidAutosaves.size) {
+        setAutosaveIndicator("error", invalidAutosaves.values().next().value);
+    } else if (autosaveError || failedAutosaves.size) {
+        setAutosaveIndicator("error", autosaveError || "자동 저장 실패");
+    } else {
+        setAutosaveIndicator("saved", "모든 변경 저장됨");
+    }
+}
+
+async function runAutosave(key) {
+    const job = autosaveJobs.get(key);
+    if (!job || job.promise) return job?.promise;
+    clearTimeout(job.timer);
+    job.timer = null;
+    const version = job.version;
+    const promise = Promise.resolve().then(job.task);
+    job.promise = promise;
+    refreshAutosaveIndicator();
+    try {
+        await promise;
+        const current = autosaveJobs.get(key);
+        if (current?.version === version) autosaveJobs.delete(key);
+        failedAutosaves.delete(key);
+        if (!failedAutosaves.size) autosaveError = "";
+    } catch (error) {
+        const current = autosaveJobs.get(key);
+        if (current?.version === version) autosaveJobs.delete(key);
+        failedAutosaves.set(key, job.task);
+        autosaveError = error.message || "자동 저장 실패";
+        handleError(error);
+    } finally {
+        const current = autosaveJobs.get(key);
+        if (current?.promise === promise) current.promise = null;
+        refreshAutosaveIndicator();
+    }
+}
+
+function scheduleAutosave(key, task, delay = 1300) {
+    invalidAutosaves.delete(key);
+    failedAutosaves.delete(key);
+    if (!failedAutosaves.size) autosaveError = "";
+    const existing = autosaveJobs.get(key);
+    const job = existing || {version: 0, timer: null, promise: null, task};
+    job.version += 1;
+    job.task = task;
+    clearTimeout(job.timer);
+    job.timer = setTimeout(() => runAutosave(key), delay);
+    autosaveJobs.set(key, job);
+    refreshAutosaveIndicator();
+}
+
+async function flushAutosaves() {
+    if (invalidAutosaves.size) throw new Error(invalidAutosaves.values().next().value);
+    let guard = 0;
+    while (autosaveJobs.size && guard < 8) {
+        guard += 1;
+        const keys = [...autosaveJobs.keys()];
+        await Promise.all(keys.map((key) => runAutosave(key)));
+        const pending = [...autosaveJobs.values()].map((job) => job.promise).filter(Boolean);
+        if (pending.length) await Promise.allSettled(pending);
+    }
+    if (autosaveError || failedAutosaves.size) throw new Error(autosaveError || "자동 저장 실패");
+}
+
+async function retryFailedAutosaves() {
+    const failed = [...failedAutosaves.entries()];
+    failedAutosaves.clear();
+    autosaveError = "";
+    failed.forEach(([key, task]) => scheduleAutosave(key, task, 0));
+    await flushAutosaves();
+}
+
+function markAutosaveInvalid(key, message) {
+    invalidAutosaves.set(key, message);
+    refreshAutosaveIndicator();
+}
+
+function clearAutosaveInvalid(key) {
+    invalidAutosaves.delete(key);
+    refreshAutosaveIndicator();
+}
+
 function formObject(form) {
     return Object.fromEntries(new FormData(form).entries());
 }
@@ -217,10 +321,16 @@ function navigateView(view) {
     if (view === "diagnostics") renderDiagnostics();
     if (view === "results") renderTrends();
     if (view === "schedule") loadAppointments().catch(handleError);
+    renderCareActionBar();
 }
 
-$$('[data-view]').forEach((button) => button.addEventListener("click", () => {
-    navigateView(button.dataset.view);
+$$('[data-view]').forEach((button) => button.addEventListener("click", async () => {
+    try {
+        if (state.encounter || autosaveJobs.size || invalidAutosaves.size) await flushAutosaves();
+        navigateView(button.dataset.view);
+    } catch (error) {
+        handleError(error);
+    }
 }));
 
 async function bootstrap() {
@@ -401,7 +511,12 @@ function renderPatients() {
             <span>${escapeHtml(speciesLabel(patient.species))} · 진료 ${patient.encounter_count}회${patient.is_archived ? " · 보관됨" : ""}</span>
         </div>
     `).join("") : `<p class="muted small">표시할 환자가 없습니다.</p>`;
-    $$("[data-patient]", root).forEach((node) => node.addEventListener("click", () => selectPatient(node.dataset.patient)));
+    $$("[data-patient]", root).forEach((node) => node.addEventListener("click", async () => {
+        try {
+            await flushAutosaves();
+            await selectPatient(node.dataset.patient);
+        } catch (error) { handleError(error); }
+    }));
 }
 
 let searchTimer;
@@ -479,6 +594,54 @@ $("#edit-patient-contact-button").addEventListener("click", () => {
 });
 $("#cancel-patient-contact").addEventListener("click", () => {
     $("#patient-contact-form").classList.add("hidden");
+    clearAutosaveInvalid("patient-contact");
+});
+
+function patientContactPayload(form = $("#patient-contact-form")) {
+    const payload = formObject(form);
+    const [sex, neutered] = payload.sex_status.split(":");
+    delete payload.sex_status;
+    payload.sex = sex;
+    payload.neutered = neutered === "true";
+    payload.birth_date = payload.birth_date || null;
+    payload.weight_kg = payload.weight_kg ? Number(payload.weight_kg) : null;
+    return payload;
+}
+
+function changedPatientContactFields(payload) {
+    return Object.fromEntries(Object.entries(payload).filter(([key, value]) => {
+        const current = state.patient?.[key];
+        if (typeof value === "boolean") return Boolean(current) !== value;
+        if (typeof value === "number") return Number(current) !== value;
+        return String(current ?? "") !== String(value ?? "");
+    }));
+}
+
+async function autosavePatientContact(patientId, changes) {
+    if (!Object.keys(changes).length) return;
+    const patient = await api(`/api/patients/${patientId}`, {method: "PATCH", body: changes});
+    if (state.patient?.id !== patientId) return;
+    state.patient = {...state.patient, ...patient};
+    const listItem = state.patients.find((item) => item.id === patientId);
+    if (listItem) Object.assign(listItem, patient);
+    renderPatients();
+    renderPatientIdentity();
+    renderPatientSummary();
+    if (state.encounter) await refreshCommercialState();
+}
+
+$("#patient-contact-form").addEventListener("input", (event) => {
+    const form = event.currentTarget;
+    if (!state.patient || state.patient.is_archived) return;
+    if (!form.checkValidity()) {
+        markAutosaveInvalid("patient-contact", "환자 필수정보 확인 필요");
+        return;
+    }
+    clearAutosaveInvalid("patient-contact");
+    const patientId = state.patient.id;
+    const changes = changedPatientContactFields(patientContactPayload(form));
+    if (!Object.keys(changes).length) return;
+    scheduleAutosave("patient-contact", () => autosavePatientContact(patientId, changes));
 });
 $("#patient-contact-form").addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -486,13 +649,8 @@ $("#patient-contact-form").addEventListener("submit", async (event) => {
     const patientId = state.patient?.id;
     if (!patientId) return;
     try {
-        const payload = formObject(form);
-        const [sex, neutered] = payload.sex_status.split(":");
-        delete payload.sex_status;
-        payload.sex = sex;
-        payload.neutered = neutered === "true";
-        payload.birth_date = payload.birth_date || null;
-        payload.weight_kg = payload.weight_kg ? Number(payload.weight_kg) : null;
+        await flushAutosaves();
+        const payload = patientContactPayload(form);
         await api(`/api/patients/${patientId}`, {
             method: "PATCH",
             body: payload,
@@ -708,6 +866,20 @@ $("#patient-form").addEventListener("submit", async (event) => {
     } catch (error) { handleError(error); }
 });
 
+function renderPatientIdentity() {
+    if (!state.patient) return;
+    $("#patient-chart").textContent = `차트번호 ${state.patient.chart_number}`;
+    $("#patient-title").textContent = state.patient.name;
+    $("#patient-meta").textContent = [
+        speciesLabel(state.patient.species), state.patient.breed,
+        sexLabel(state.patient.sex, state.patient.neutered),
+        formatPatientAge(state.patient.birth_date),
+        state.patient.owner_name ? `보호자 ${state.patient.owner_name}` : null,
+        state.patient.owner_phone,
+        state.patient.weight_kg ? `${state.patient.weight_kg} kg` : null,
+    ].filter(Boolean).join(" · ");
+}
+
 async function selectPatient(patientId) {
     const [patient, trends, monitoring] = await Promise.all([
         api(`/api/patients/${patientId}`),
@@ -723,18 +895,18 @@ async function selectPatient(patientId) {
     state.agentReview = null;
     state.cardiacComparison = null;
     state.workflow = {ecg: null, lab: null, prescription: null, billing: null, echoVideos: []};
-    state.commercial = {workflow: null, diagnosticPlan: [], education: null, prescription: null, invoice: null};
+    state.commercial = {workflow: null, diagnosticPlan: [], education: null, prescription: null, invoice: null, invoiceSuggestions: []};
     $("#patient-browser").classList.add("hidden");
     $("#empty-state").classList.add("hidden");
     $("#patient-workspace").classList.remove("hidden");
+    $("#patient-workspace").classList.remove("workflow-focus-mode");
     const encounterForm = $("#encounter-form");
     encounterForm.reset();
     encounterForm.classList.add("hidden");
     $("#patient-contact-form").classList.add("hidden");
     $("#encounter-workspace").classList.add("hidden");
     $("#encounter-placeholder").classList.remove("hidden");
-    $("#patient-chart").textContent = `차트번호 ${state.patient.chart_number}`;
-    $("#patient-title").textContent = state.patient.name;
+    renderPatientIdentity();
     const archived = Boolean(state.patient.is_archived);
     $("#patient-archive-status").classList.toggle("hidden", !archived);
     const archiveButton = $("#archive-patient-button");
@@ -743,14 +915,6 @@ async function selectPatient(patientId) {
     const encounterButton = $("#new-encounter-button");
     encounterButton.disabled = archived;
     encounterButton.title = archived ? "환자를 복원한 뒤 새 진료를 작성할 수 있습니다." : "";
-    $("#patient-meta").textContent = [
-        speciesLabel(state.patient.species), state.patient.breed,
-        sexLabel(state.patient.sex, state.patient.neutered),
-        formatPatientAge(state.patient.birth_date),
-        state.patient.owner_name ? `보호자 ${state.patient.owner_name}` : null,
-        state.patient.owner_phone,
-        state.patient.weight_kg ? `${state.patient.weight_kg} kg` : null,
-    ].filter(Boolean).join(" · ");
     renderPatients();
     renderPatientSummary();
     renderPatientCardiacBadges();
@@ -759,6 +923,7 @@ async function selectPatient(patientId) {
     renderCardioSummary();
     renderTrends();
     renderDiagnostics();
+    renderCareActionBar();
 }
 
 $("#back-to-patient-list").addEventListener("click", () => {
@@ -825,7 +990,12 @@ function renderEncounters() {
         </div>
     `;
     }).join("") : `<p class="muted small">진료 이력이 없습니다. 새 진료를 생성하세요.</p>`;
-    $$("[data-encounter]", root).forEach((node) => node.addEventListener("click", () => openEncounter(node.dataset.encounter)));
+    $$("[data-encounter]", root).forEach((node) => node.addEventListener("click", async () => {
+        try {
+            await flushAutosaves();
+            await openEncounter(node.dataset.encounter);
+        } catch (error) { handleError(error); }
+    }));
 }
 
 $("#new-encounter-button").addEventListener("click", () => {
@@ -929,6 +1099,7 @@ async function openEncounter(encounterId) {
         education: education.document,
         prescription: structuredPrescription.prescription,
         invoice: invoice.invoice,
+        invoiceSuggestions: invoice.suggested_items || [],
     };
     state.selectedCandidates = {};
     $("#encounter-form").classList.add("hidden");
@@ -963,6 +1134,132 @@ const workflowLabels = {
     documentation: "SOAP", education: "보호자 설명", checkout: "수납", closed: "종료",
 };
 
+const workflowGuidance = {
+    intake: ["접수·문진을 완성하세요", "보호자 연락처, 현재 약물, 알레르기와 주호소를 확인합니다."],
+    examination: ["신체검사와 활력징후를 기록하세요", "신체검사 소견과 체중·심박수·호흡수·혈압을 입력합니다."],
+    diagnostics: ["계획한 검사를 완료하세요", "검사 결과를 입력하고 수의사 검토 또는 미실시 사유를 남깁니다."],
+    documentation: ["SOAP를 순서대로 확정하세요", "S → O → A → P 순서로 AI 초안을 검토하고 확정합니다."],
+    education: ["처방과 보호자 설명을 완료하세요", "처방을 확정한 뒤 설명서를 생성하고 교부합니다."],
+    checkout: ["청구와 결제를 마무리하세요", "청구서 발행 후 결제 또는 미수 사유를 기록합니다."],
+    closed: ["진료가 종료되었습니다", "필요하면 수의사가 진료를 다시 열 수 있습니다."],
+};
+
+function recommendedDiagnosticTab() {
+    const blockers = state.commercial.workflow?.blockers || [];
+    if (blockers.some((item) => ["body_weight_kg_required", "heart_rate_bpm_required", "respiratory_rate_rpm_required", "systolic_bp_mmhg_required"].includes(item.code))) return "bp";
+    const unresolved = (state.commercial.diagnosticPlan || []).find((item) => !["reviewed", "not_required"].includes(item.status));
+    return unresolved?.exam_type || state.activeDiagnosticTab || "echo";
+}
+
+function applyWorkflowFocus() {
+    const workspace = $("#encounter-workspace");
+    const workflow = state.commercial.workflow;
+    if (!workspace || !workflow) return;
+    workspace.dataset.stage = workflow.stage;
+    workspace.classList.toggle("focus-mode", state.focusMode);
+    $("#patient-workspace").classList.toggle("workflow-focus-mode", state.focusMode);
+    $$('[data-focus-stages]', workspace).forEach((element) => {
+        const stages = String(element.dataset.focusStages || "").split(/\s+/);
+        element.classList.toggle("focus-hidden", state.focusMode && !stages.includes(workflow.stage));
+    });
+    const [title, description] = workflowGuidance[workflow.stage] || ["현재 업무를 계속하세요", ""];
+    $("#workflow-focus-title").textContent = title;
+    $("#workflow-focus-description").textContent = description;
+    const count = workflow.blockers.length;
+    $("#workflow-focus-count").textContent = workflow.stage === "closed"
+        ? "모든 절차 완료"
+        : (count ? `남은 조건 ${count}개` : "다음 단계 준비됨");
+    const details = $(".encounter-edit-details");
+    if (details && state.focusMode && ["intake", "examination"].includes(workflow.stage)) details.open = true;
+}
+
+function focusRelevantWork() {
+    const workflow = state.commercial.workflow;
+    if (!workflow) return;
+    const codes = new Set(workflow.blockers.map((item) => item.code));
+    if (workflow.stage === "intake") {
+        navigateView("patients");
+        if (["owner_name_required", "owner_phone_required", "current_medications_required", "allergies_required"].some((code) => codes.has(code))) {
+            $("#edit-patient-contact-button").click();
+            $("#patient-contact-form").scrollIntoView({behavior: "smooth", block: "center"});
+        } else {
+            const details = $(".encounter-edit-details");
+            details.open = true;
+            details.scrollIntoView({behavior: "smooth", block: "center"});
+        }
+        return;
+    }
+    if (workflow.stage === "examination") {
+        if (["body_weight_kg_required", "heart_rate_bpm_required", "respiratory_rate_rpm_required", "systolic_bp_mmhg_required"].some((code) => codes.has(code))) {
+            navigateView("diagnostics");
+            setDiagnosticTab("bp");
+        } else {
+            navigateView("patients");
+            const details = $(".encounter-edit-details");
+            details.open = true;
+            details.scrollIntoView({behavior: "smooth", block: "center"});
+            details.querySelector('[name="physical_exam"]')?.focus();
+        }
+        return;
+    }
+    if (workflow.stage === "diagnostics") {
+        navigateView("diagnostics");
+        setDiagnosticTab(recommendedDiagnosticTab());
+        return;
+    }
+    if (workflow.stage === "documentation") {
+        navigateView("patients");
+        const focus = focusStage(state.soap?.sections || []);
+        const step = focus ? $(`.soap-step[data-stage="${focus}"]`) : null;
+        step?.scrollIntoView({behavior: "smooth", block: "center"});
+        step?.querySelector(".soap-editor")?.focus({preventScroll: true});
+        return;
+    }
+    if (workflow.stage === "education") {
+        const prescriptionBlocked = codes.has("prescription_unresolved");
+        $(`[data-report="${prescriptionBlocked ? "prescription" : "owner"}"]`)?.click();
+        return;
+    }
+    if (workflow.stage === "checkout") {
+        $('[data-report="billing"]')?.click();
+        return;
+    }
+    navigateView("today");
+}
+
+function renderCareActionBar() {
+    const bar = $("#care-action-bar");
+    if (!bar) return;
+    const workflow = state.commercial.workflow;
+    const relevantView = ["patients", "diagnostics", "results", "report"].includes(state.activeView);
+    const visible = Boolean(state.encounter && workflow && relevantView);
+    bar.classList.toggle("hidden", !visible);
+    $("#app-view").classList.toggle("has-care-action", visible);
+    if (!visible) return;
+    $("#care-stage-label").textContent = `${state.patient?.name || "환자"} · ${workflowLabels[workflow.stage] || workflow.stage}`;
+    const toggle = $("#focus-mode-toggle");
+    toggle.classList.toggle("hidden", state.activeView !== "patients");
+    toggle.textContent = state.focusMode ? "전체 보기" : "집중 보기";
+    const next = $("#care-next-action");
+    const veterinarianRequired = ["diagnostics", "documentation", "education"].includes(workflow.next_stage);
+    const roleBlocked = state.user?.role === "staff" && veterinarianRequired;
+    if (workflow.stage === "closed") {
+        next.textContent = "오늘진료로 돌아가기";
+        next.disabled = false;
+    } else if (!workflow.blockers.length && workflow.next_stage && !roleBlocked) {
+        next.textContent = `${workflowLabels[workflow.next_stage]} 단계로 진행`;
+        next.disabled = false;
+    } else if (roleBlocked) {
+        next.textContent = "수의사 확인 필요";
+        next.disabled = true;
+    } else {
+        next.textContent = (workflowGuidance[workflow.stage] || ["다음 할 일"])[0];
+        next.disabled = false;
+    }
+    applyWorkflowFocus();
+    refreshAutosaveIndicator();
+}
+
 function populateEncounterEditForm() {
     if (!state.encounter) return;
     const form = $("#encounter-edit-form");
@@ -990,7 +1287,9 @@ function renderWorkflow() {
         : workflow.blockers;
     $("#workflow-blockers").innerHTML = visibleBlockers.length
         ? visibleBlockers.map((item) => `<p>${escapeHtml(item.message)}</p>`).join("")
-        : '<span class="muted small">다음 단계로 진행할 수 있습니다.</span>';
+        : (closed
+            ? '<span class="muted small">청구·결제를 포함한 모든 진료 절차가 완료되었습니다.</span>'
+            : '<span class="muted small">다음 단계로 진행할 수 있습니다.</span>');
     const button = $("#workflow-next-button");
     button.classList.toggle("hidden", !workflow.next_stage && !canReopen);
     button.dataset.workflowAction = canReopen ? "reopen" : "advance";
@@ -1005,7 +1304,8 @@ function renderWorkflow() {
     });
     $("#encounter-edit-form").elements.disease_id.disabled = closed || state.user?.role === "staff";
     $("#encounter-edit-form").elements.physical_exam.disabled = closed || state.user?.role === "staff";
-    $("#save-visit-button").disabled = closed || state.user?.role !== "veterinarian";
+    $("#save-visit-button").disabled = closed;
+    renderCareActionBar();
 }
 
 function agentReviewList(title, items = []) {
@@ -1100,6 +1400,7 @@ async function refreshCommercialState() {
         education: education.document,
         prescription: prescription.prescription,
         invoice: invoice.invoice,
+        invoiceSuggestions: invoice.suggested_items || [],
     };
     renderWorkflow();
     renderDiagnosticPlan();
@@ -1109,6 +1410,7 @@ $("#workflow-next-button").addEventListener("click", async (event) => {
     const button = event.currentTarget;
     button.disabled = true;
     try {
+        await flushAutosaves();
         const reopening = button.dataset.workflowAction === "reopen";
         state.commercial.workflow = await api(`/api/encounters/${state.encounter.id}/workflow/transition`, {
             method: "POST",
@@ -1133,23 +1435,76 @@ $("#workflow-next-button").addEventListener("click", async (event) => {
     finally { renderWorkflow(); }
 });
 
+$("#focus-mode-toggle").addEventListener("click", () => {
+    state.focusMode = !state.focusMode;
+    renderCareActionBar();
+});
+
+$("#care-next-action").addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    button.disabled = true;
+    try {
+        await flushAutosaves();
+        const workflow = state.commercial.workflow;
+        if (!workflow) return;
+        if (workflow.stage === "closed") {
+            navigateView("today");
+        } else if (!workflow.blockers.length && workflow.next_stage) {
+            $("#workflow-next-button").click();
+        } else {
+            focusRelevantWork();
+        }
+    } catch (error) {
+        handleError(error);
+    } finally {
+        renderCareActionBar();
+    }
+});
+
+function encounterEditPayload(form = $("#encounter-edit-form")) {
+    const payload = formObject(form);
+    if (state.user?.role === "staff") {
+        delete payload.disease_id;
+        delete payload.physical_exam;
+    }
+    return payload;
+}
+
+async function saveEncounterEdits(encounterId, payload, quiet = false) {
+    const encounter = await api(`/api/encounters/${encounterId}`, {method: "PATCH", body: payload});
+    if (state.encounter?.id !== encounterId) return;
+    state.encounter = encounter;
+    state.soap = await api(`/api/encounters/${encounterId}/soap`);
+    reflectEncounterStatus();
+    renderEncounters();
+    renderSoap();
+    await refreshCommercialState();
+    if (!quiet) toast("진료 기본정보를 저장했습니다.");
+}
+
+$("#encounter-edit-form").addEventListener("input", (event) => {
+    const form = event.currentTarget;
+    if (!state.encounter || state.commercial.workflow?.stage === "closed") return;
+    if (!form.checkValidity()) {
+        markAutosaveInvalid("encounter", "필수 입력값 확인 필요");
+        return;
+    }
+    clearAutosaveInvalid("encounter");
+    const encounterId = state.encounter.id;
+    const payload = encounterEditPayload(form);
+    scheduleAutosave("encounter", () => saveEncounterEdits(encounterId, payload, true));
+});
+$("#encounter-edit-form").addEventListener("change", (event) => {
+    event.currentTarget.dispatchEvent(new Event("input", {bubbles: false}));
+});
 $("#encounter-edit-form").addEventListener("submit", async (event) => {
     event.preventDefault();
     const form = event.currentTarget;
     const button = $('button[type="submit"]', form);
     button.disabled = true;
     try {
-        const payload = formObject(form);
-        if (state.user?.role === "staff") {
-            delete payload.disease_id;
-            delete payload.physical_exam;
-        }
-        state.encounter = await api(`/api/encounters/${state.encounter.id}`, {method: "PATCH", body: payload});
-        state.soap = await api(`/api/encounters/${state.encounter.id}/soap`);
-        reflectEncounterStatus();
-        renderSoap();
-        await refreshCommercialState();
-        toast("진료 기본정보를 저장했습니다.");
+        const encounterId = state.encounter.id;
+        await saveEncounterEdits(encounterId, encounterEditPayload(form));
     } catch (error) { handleError(error); } finally {
         button.disabled = state.commercial.workflow?.stage === "closed";
     }
@@ -1288,10 +1643,8 @@ async function refreshAfterObjectiveChange(message) {
     toast(message);
 }
 
-async function saveEcg() {
-    if (!state.encounter) return toast("먼저 진료를 선택하세요.", "error");
-    const form = $("#cardiac-exam-form");
-    const payload = {
+function ecgFormPayload(form = $("#cardiac-exam-form")) {
+    return {
         recorded_at: form.elements.ecg_recorded_at.value || null,
         heart_rate_bpm: nullableNumber(form.elements.ecg_heart_rate_bpm),
         rhythm: form.elements.ecg_rhythm.value.trim() || null,
@@ -1300,23 +1653,34 @@ async function saveEcg() {
         qt_ms: nullableNumber(form.elements.ecg_qt_ms),
         interpretation: form.elements.ecg_interpretation.value.trim() || null,
     };
-    const data = await api(`/api/encounters/${state.encounter.id}/ecg`, {method: "PUT", body: payload});
-    state.workflow.ecg = data.exam;
-    await refreshAfterObjectiveChange("ECG 기록을 저장했습니다. O 이후 SOAP를 다시 확인하세요.");
 }
 
-async function saveLab() {
-    if (!state.encounter) return toast("먼저 진료를 선택하세요.", "error");
-    const form = $("#cardiac-exam-form");
+async function saveEcg(payload = ecgFormPayload(), quiet = false, encounterId = state.encounter?.id) {
+    if (!encounterId) return toast("먼저 진료를 선택하세요.", "error");
+    const data = await api(`/api/encounters/${encounterId}/ecg`, {method: "PUT", body: payload});
+    if (state.encounter?.id !== encounterId) return;
+    state.workflow.ecg = data.exam;
+    if (quiet) await refreshAfterClinicalAutosave(encounterId);
+    else await refreshAfterObjectiveChange("ECG 기록을 저장했습니다. O 이후 SOAP를 다시 확인하세요.");
+}
+
+function labFormPayload(form = $("#cardiac-exam-form")) {
     const numberFields = ["nt_probnp_pmol_l", "troponin_i_ng_ml", "bun_mg_dl", "creatinine_mg_dl", "sodium_mmol_l", "potassium_mmol_l"];
     const payload = {
         collected_at: form.elements.lab_collected_at.value || null,
         notes: form.elements.lab_notes.value.trim() || null,
     };
     for (const field of numberFields) payload[field] = nullableNumber(form.elements[field]);
-    const data = await api(`/api/encounters/${state.encounter.id}/lab`, {method: "PUT", body: payload});
+    return payload;
+}
+
+async function saveLab(payload = labFormPayload(), quiet = false, encounterId = state.encounter?.id) {
+    if (!encounterId) return toast("먼저 진료를 선택하세요.", "error");
+    const data = await api(`/api/encounters/${encounterId}/lab`, {method: "PUT", body: payload});
+    if (state.encounter?.id !== encounterId) return;
     state.workflow.lab = data.result;
-    await refreshAfterObjectiveChange("Lab 기록을 저장했습니다. O 이후 SOAP를 다시 확인하세요.");
+    if (quiet) await refreshAfterClinicalAutosave(encounterId);
+    else await refreshAfterObjectiveChange("Lab 기록을 저장했습니다. O 이후 SOAP를 다시 확인하세요.");
 }
 
 function renderEchoVideos() {
@@ -1427,9 +1791,47 @@ async function saveCardiacExam() {
     toast("심장검사를 저장했습니다. O 이후 SOAP를 다시 확인하세요.");
 }
 
+async function refreshAfterClinicalAutosave(encounterId) {
+    const [soap, encounter, workflow] = await Promise.all([
+        api(`/api/encounters/${encounterId}/soap`),
+        api(`/api/encounters/${encounterId}`),
+        api(`/api/encounters/${encounterId}/workflow`),
+    ]);
+    if (state.encounter?.id !== encounterId) return;
+    state.soap = soap;
+    state.encounter = encounter;
+    state.commercial.workflow = workflow;
+    reflectEncounterStatus();
+    renderEncounters();
+    renderSoap();
+    renderWorkflow();
+}
+
+async function autosaveCardiacExam(encounterId, payload) {
+    const comparison = await api(`/api/encounters/${encounterId}/cardiac-exam`, {method: "PUT", body: payload});
+    if (state.encounter?.id !== encounterId) return;
+    state.cardiacComparison = comparison;
+    if (comparison?.exam?.body_weight_kg) {
+        state.patient.weight_kg = comparison.exam.body_weight_kg;
+        renderPatientSummary();
+    }
+    renderCardioSummary();
+    await refreshAfterClinicalAutosave(encounterId);
+}
+
 function setDiagnosticTab(tab) {
-    $$('[data-diagnostic-tab]').forEach((button) => button.classList.toggle("active", button.dataset.diagnosticTab === tab));
-    $$('[data-diagnostic-panel]').forEach((panel) => panel.classList.toggle("hidden", panel.dataset.diagnosticPanel !== tab));
+    state.activeDiagnosticTab = tab;
+    $$('[data-diagnostic-tab]').forEach((button) => {
+        const active = button.dataset.diagnosticTab === tab;
+        button.classList.toggle("active", active);
+        button.setAttribute("aria-selected", String(active));
+        button.tabIndex = active ? 0 : -1;
+    });
+    $$('[data-diagnostic-panel]').forEach((panel) => {
+        const active = panel.dataset.diagnosticPanel === tab;
+        panel.classList.toggle("hidden", !active);
+        panel.setAttribute("aria-hidden", String(!active));
+    });
 }
 
 const diagnosticLabels = {echo: "Echo", ecg: "ECG", xray: "X-ray", bp: "BP·Vitals", lab: "Lab"};
@@ -1454,22 +1856,38 @@ function renderDiagnosticPlan() {
         : (saveButton.disabled ? "수의사가 검토한 검사 계획은 수의사만 변경할 수 있습니다." : "");
 }
 
-$("#save-diagnostic-plan").addEventListener("click", async (event) => {
-    if (!state.encounter) return toast("진료를 먼저 선택하세요.", "error");
-    const button = event.currentTarget;
-    const items = Object.keys(diagnosticLabels).map((type) => ({
+function diagnosticPlanPayload() {
+    return Object.keys(diagnosticLabels).map((type) => ({
         exam_type: type,
         status: $(`[data-plan-status="${type}"]`).value,
         reason: $(`[data-plan-reason="${type}"]`).value.trim() || null,
     })).filter((item) => item.status);
+}
+
+async function saveDiagnosticPlan(encounterId, items, quiet = false) {
+    const data = await api(`/api/encounters/${encounterId}/diagnostic-plan`, {method: "PUT", body: {items}});
+    if (state.encounter?.id !== encounterId) return;
+    state.commercial.diagnosticPlan = data.items;
+    if (!quiet) renderDiagnosticPlan();
+    state.commercial.workflow = await api(`/api/encounters/${encounterId}/workflow`);
+    renderWorkflow();
+    if (!quiet) toast("검사 계획과 검토 상태를 저장했습니다.");
+}
+
+$("#diagnostic-plan-items").addEventListener("input", () => {
+    if (!state.encounter || state.commercial.workflow?.stage === "closed") return;
+    const encounterId = state.encounter.id;
+    const items = diagnosticPlanPayload();
+    scheduleAutosave("diagnostic-plan", () => saveDiagnosticPlan(encounterId, items, true));
+});
+$("#save-diagnostic-plan").addEventListener("click", async (event) => {
+    if (!state.encounter) return toast("진료를 먼저 선택하세요.", "error");
+    const button = event.currentTarget;
+    const encounterId = state.encounter.id;
+    const items = diagnosticPlanPayload();
     button.disabled = true;
     try {
-        const data = await api(`/api/encounters/${state.encounter.id}/diagnostic-plan`, {method: "PUT", body: {items}});
-        state.commercial.diagnosticPlan = data.items;
-        renderDiagnosticPlan();
-        state.commercial.workflow = await api(`/api/encounters/${state.encounter.id}/workflow`);
-        renderWorkflow();
-        toast("검사 계획과 검토 상태를 저장했습니다.");
+        await saveDiagnosticPlan(encounterId, items);
     } catch (error) { handleError(error); } finally { renderDiagnosticPlan(); }
 });
 
@@ -1495,6 +1913,7 @@ function renderDiagnostics() {
     $("#save-ecg").disabled = !clinicalEdit;
     $("#save-lab").disabled = !clinicalEdit;
     $("#upload-echo-video").disabled = closed;
+    setDiagnosticTab(state.activeDiagnosticTab || "echo");
 }
 
 function trendChartHtml(key, label) {
@@ -1600,6 +2019,26 @@ function renderTrends() {
 
 $("#cardiac-exam-form").addEventListener("input", (event) => {
     if (["e_velocity_ms", "a_velocity_ms", "la_ao", "lviddn", "tr_vmax_ms"].includes(event.target.name)) updateEchoCalculation();
+    if (!event.target.name || event.target.readOnly || !state.encounter || state.user?.role !== "veterinarian" || state.commercial.workflow?.stage === "closed") return;
+    const form = event.currentTarget;
+    if (!form.checkValidity()) {
+        markAutosaveInvalid("clinical-form", "입력 범위 확인 필요");
+        return;
+    }
+    clearAutosaveInvalid("clinical-form");
+    const encounterId = state.encounter.id;
+    const ecgFields = new Set(["ecg_recorded_at", "ecg_heart_rate_bpm", "ecg_rhythm", "ecg_pr_ms", "ecg_qrs_ms", "ecg_qt_ms", "ecg_interpretation"]);
+    const labFields = new Set(["lab_collected_at", "nt_probnp_pmol_l", "troponin_i_ng_ml", "bun_mg_dl", "creatinine_mg_dl", "sodium_mmol_l", "potassium_mmol_l", "lab_notes"]);
+    if (ecgFields.has(event.target.name)) {
+        const payload = ecgFormPayload(form);
+        scheduleAutosave("ecg", () => saveEcg(payload, true, encounterId));
+    } else if (labFields.has(event.target.name)) {
+        const payload = labFormPayload(form);
+        scheduleAutosave("lab", () => saveLab(payload, true, encounterId));
+    } else if ([...cardiacBooleanFields, ...cardiacNumberFields, "rhythm", "findings", "assessment", "murmur_grade", "acvim_stage", "ph_risk", "chf_status", "mr_severity"].includes(event.target.name)) {
+        const payload = cardiacFormPayload();
+        scheduleAutosave("cardiac", () => autosaveCardiacExam(encounterId, payload));
+    }
 });
 $("#cardiac-exam-form").addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -1661,13 +2100,24 @@ $("#upload-echo-video").addEventListener("click", async (event) => {
     button.disabled = true;
     try { await uploadEchoVideo(); } catch (error) { handleError(error); } finally { button.disabled = false; }
 });
-$$('[data-diagnostic-tab]').forEach((button) => button.addEventListener("click", () => setDiagnosticTab(button.dataset.diagnosticTab)));
+$$('[data-diagnostic-tab]').forEach((button) => {
+    button.addEventListener("click", () => setDiagnosticTab(button.dataset.diagnosticTab));
+    button.addEventListener("keydown", (event) => {
+        if (!["ArrowLeft", "ArrowRight"].includes(event.key)) return;
+        event.preventDefault();
+        const tabs = $$('[data-diagnostic-tab]');
+        const index = tabs.indexOf(button);
+        const next = tabs[(index + (event.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length];
+        setDiagnosticTab(next.dataset.diagnosticTab);
+        next.focus();
+    });
+});
 $$('[data-echo-subtab]').forEach((button) => button.addEventListener("click", () => activateEchoSubtab(button.dataset.echoSubtab)));
 $$('[data-open-diagnostic]').forEach((button) => button.addEventListener("click", () => {
     navigateView("diagnostics");
     setDiagnosticTab(button.dataset.openDiagnostic);
 }));
-$("#save-visit-button").addEventListener("click", () => saveCardiacExam().catch(handleError));
+$("#save-visit-button").addEventListener("click", () => retryFailedAutosaves().catch(handleError));
 $("#complete-visit-button").addEventListener("click", async (event) => {
     if (!state.commercial.workflow) return toast("진료를 선택하세요.", "error");
     if (state.commercial.workflow.stage !== "checkout") {
@@ -1808,7 +2258,13 @@ function prescriptionItemHtml(item = {}) {
 }
 
 function invoiceItemHtml(item = {}) {
-    return `<div class="invoice-item-row"><label>항목<input data-invoice-field="description" value="${escapeHtml(item.description || "")}"></label><label>수량<input data-invoice-field="quantity" type="number" min="0.01" step="0.01" value="${item.quantity ?? 1}"></label><label>단가<input data-invoice-field="unit_amount" type="number" min="0" step="100" value="${item.unit_amount ?? 0}"></label><label>코드<input data-invoice-field="item_code" value="${escapeHtml(item.item_code || "")}"></label><button type="button" class="danger-ghost" data-remove-row>삭제</button></div>`;
+    return `<div class="invoice-item-row"><label>항목<input data-invoice-field="description" value="${escapeHtml(item.description || "")}"></label><label>수량<input data-invoice-field="quantity" type="number" min="0.01" step="0.01" value="${item.quantity ?? 1}"></label><label>단가<input data-invoice-field="unit_amount" type="number" min="0" step="100" value="${item.unit_amount ?? 0}"></label><label>코드 (선택)<input data-invoice-field="item_code" value="${escapeHtml(item.item_code || "")}" placeholder="자동 입력"></label><button type="button" class="danger-ghost" data-remove-row>삭제</button></div>`;
+}
+
+function invoiceDraftTotals(items, discount = 0, paid = 0) {
+    const subtotal = items.reduce((sum, item) => sum + Number(item.quantity || 0) * Number(item.unit_amount || 0), 0);
+    const total = Math.max(0, subtotal - Number(discount || 0));
+    return {total, balance: Math.max(0, total - Number(paid || 0))};
 }
 
 function receiptHtml(paymentType, snapshot = {}) {
@@ -1846,12 +2302,27 @@ function reportHtml(type) {
         }
         const invoice = state.commercial.invoice || {};
         const editable = !invoice.status || ["draft", "void"].includes(invoice.status);
-        const items = invoice.items?.length ? invoice.items : [{description: "진찰료", quantity: 1, unit_amount: 0}, {description: "검사비", quantity: 1, unit_amount: 0}, {description: "약제비", quantity: 1, unit_amount: 0}];
-        const balance = Math.max(0, Number(invoice.total_amount || 0) - Number(invoice.paid_amount || 0));
+        const suggestions = state.commercial.invoiceSuggestions || [];
+        const items = invoice.items?.length ? invoice.items : (suggestions.length ? suggestions : [{}]);
+        const draftTotals = invoiceDraftTotals(items, invoice.discount_amount, invoice.paid_amount);
+        const hasUnpricedMedication = items.some((item) => item.item_code === "MED-UNPRICED" && Number(item.unit_amount || 0) <= 0);
+        const displayedTotal = invoice.status ? Number(invoice.total_amount || 0) : draftTotals.total;
+        const balance = invoice.status ? Math.max(0, displayedTotal - Number(invoice.paid_amount || 0)) : draftTotals.balance;
         const paymentHistory = (invoice.payments || []).map((payment) => `<p>${escapeHtml(payment.receipt_number)} · ${payment.payment_type === "refund" ? "환불" : "결제"} · ${Number(payment.amount).toLocaleString("ko-KR")}원 · ${escapeHtml(payment.payment_method)} <button type="button" class="link-button" data-receipt-id="${escapeHtml(payment.id)}">보기·인쇄</button></p>`).join("") || "<p>기록 없음</p>";
-        const paymentForms = invoice.status && !["draft", "void"].includes(invoice.status) ? `<form id="payment-form" class="report-entry-form"><label>결제금액<input name="amount" type="number" min="1" max="${balance}" step="1" value="${balance}"></label><label>결제수단<select name="payment_method"><option value="card">카드</option><option value="cash">현금</option><option value="transfer">이체</option><option value="other">기타</option></select></label><label>결제일시<input name="paid_at" type="datetime-local" value="${currentDatetimeLocal()}"></label><button type="submit" class="primary" ${balance <= 0 ? "disabled" : ""}>결제 기록</button></form>${Number(invoice.paid_amount || 0) > 0 ? `<form id="refund-form" class="report-entry-form"><label>환불금액<input name="amount" type="number" min="1" max="${invoice.paid_amount}" step="1" value="${invoice.paid_amount}"></label><label>환불수단<select name="payment_method"><option value="card">카드</option><option value="cash">현금</option><option value="transfer">이체</option><option value="other">기타</option></select></label><label>환불일시<input name="paid_at" type="datetime-local" value="${currentDatetimeLocal()}"></label><label class="wide">환불 사유<input name="reason" required maxlength="500"></label><button type="submit" class="danger">환불 기록</button></form>` : ""}<form id="deferred-form" class="report-entry-form"><label class="wide">미수 사유<input name="reason" required maxlength="500" value="${escapeHtml(invoice.deferred_reason || "")}"></label><button type="submit" class="secondary">미수 사유 기록</button></form><div class="commercial-actions"><button type="button" class="danger-ghost" data-void-invoice>청구서 취소·정정</button></div><section><h3>결제·환불 이력</h3>${paymentHistory}</section>` : "";
+        const paymentEntryForm = balance > 0 ? `<form id="payment-form" class="report-entry-form"><label>결제금액<input name="amount" type="number" min="1" max="${balance}" step="1" value="${balance}"></label><label>결제수단<select name="payment_method"><option value="card">카드</option><option value="cash">현금</option><option value="transfer">이체</option><option value="other">기타</option></select></label><label>결제일시<input name="paid_at" type="datetime-local" value="${currentDatetimeLocal()}"></label><button type="submit" class="primary">결제 기록</button></form>` : "";
+        const refundForm = Number(invoice.paid_amount || 0) > 0 ? `<form id="refund-form" class="report-entry-form"><label>환불금액<input name="amount" type="number" min="1" max="${invoice.paid_amount}" step="1" value="${invoice.paid_amount}"></label><label>환불수단<select name="payment_method"><option value="card">카드</option><option value="cash">현금</option><option value="transfer">이체</option><option value="other">기타</option></select></label><label>환불일시<input name="paid_at" type="datetime-local" value="${currentDatetimeLocal()}"></label><label class="wide">환불 사유<input name="reason" required maxlength="500"></label><button type="submit" class="danger">환불 기록</button></form>` : "";
+        const deferredForm = balance > 0 ? `<form id="deferred-form" class="report-entry-form"><label class="wide">미수 사유<input name="reason" required maxlength="500" value="${escapeHtml(invoice.deferred_reason || "")}"></label><button type="submit" class="secondary">미수 사유 기록</button></form>` : "";
+        const paymentForms = invoice.status && !["draft", "void"].includes(invoice.status) ? `${paymentEntryForm}${refundForm}${deferredForm}<div class="commercial-actions"><button type="button" class="danger-ghost" data-void-invoice>청구서 취소·정정</button></div><section><h3>결제·환불 이력</h3>${paymentHistory}</section>` : "";
         const correctionNotice = invoice.status === "void" ? `<p class="review-warning">취소된 v${invoice.version_no} 청구서입니다. 아래 항목을 수정해 새 버전을 발행하세요. 사유: ${escapeHtml(invoice.void_reason || "-")}</p>` : "";
-        return `<div class="report-sheet"><header><p class="eyebrow">INVOICE · PAYMENT</p><h2>청구·수납</h2><p>${escapeHtml(patientLine)} · ${escapeHtml(invoice.invoice_number || "미발행")}${invoice.version_no ? ` · v${invoice.version_no}` : ""}</p></header>${correctionNotice}<form id="invoice-form" class="report-entry-form"><div id="invoice-items" class="invoice-items wide">${items.map(invoiceItemHtml).join("")}</div><button type="button" data-add-invoice-item ${editable ? "" : "disabled"}>항목 추가</button><label>할인<input name="discount_amount" type="number" min="0" step="100" value="${invoice.discount_amount || 0}" ${editable ? "" : "disabled"}></label><label>미수 사유<input name="deferred_reason" maxlength="500" value="${escapeHtml(invoice.deferred_reason || "")}" ${editable ? "" : "disabled"}></label><div class="billing-total wide">총액 <strong>${Number(invoice.total_amount || 0).toLocaleString("ko-KR")}원</strong> · 결제 ${Number(invoice.paid_amount || 0).toLocaleString("ko-KR")}원 · 잔액 ${balance.toLocaleString("ko-KR")}원</div><div class="commercial-actions wide">${editable ? '<button type="submit" class="secondary">청구서 저장</button><button type="button" class="primary" data-issue-invoice>청구서 발행</button>' : ""}</div></form>${paymentForms}</div>`;
+        const suggestionReasons = suggestions.map((item) => `<li><strong>${escapeHtml(item.description)}</strong><span>${escapeHtml(item.source_note || "완료 기록에서 자동 추가")}${item.pricing_missing ? " · 가격표 등록 필요" : ""}</span></li>`).join("");
+        const automaticNotice = !invoice.status && suggestions.length ? `<div class="billing-auto-notice wide"><div><strong>진료 기록에서 ${suggestions.length}개 항목을 자동으로 불러왔습니다.</strong><span>아래 이유를 확인한 뒤 발행하세요.</span></div><ul>${suggestionReasons}</ul></div>` : "";
+        const reloadSuggestions = editable && invoice.status && suggestions.length ? `<button type="button" class="secondary" data-apply-invoice-suggestions>완료 기록에서 다시 불러오기</button>` : "";
+        const latestPayment = [...(invoice.payments || [])].reverse().find((payment) => payment.payment_type === "payment");
+        const paymentComplete = invoice.status === "paid" && balance <= 0 && latestPayment
+            ? `<div class="payment-complete-banner"><span class="payment-complete-check">✓</span><div><p>결제가 완료되었습니다</p><strong>${Number(latestPayment.amount).toLocaleString("ko-KR")}원 · ${escapeHtml(latestPayment.payment_method)}</strong><span>영수증 ${escapeHtml(latestPayment.receipt_number)} · ${escapeHtml(formatDate(latestPayment.paid_at, true))}</span></div><button type="button" data-receipt-id="${escapeHtml(latestPayment.id)}">영수증 보기·인쇄</button></div>`
+            : "";
+        const deferredField = editable ? `<label>미수 사유<input name="deferred_reason" maxlength="500" value="${escapeHtml(invoice.deferred_reason || "")}"></label>` : "";
+        return `<div class="report-sheet"><header><p class="eyebrow">INVOICE · PAYMENT</p><h2>청구·수납</h2><p>${escapeHtml(patientLine)} · ${escapeHtml(invoice.invoice_number || "미발행")}${invoice.version_no ? ` · v${invoice.version_no}` : ""}</p></header>${correctionNotice}${paymentComplete}<form id="invoice-form" class="report-entry-form">${automaticNotice}<div id="invoice-items" class="invoice-items wide">${items.map(invoiceItemHtml).join("")}</div><div class="commercial-actions wide">${reloadSuggestions}<button type="button" data-add-invoice-item ${editable ? "" : "disabled"}>예외 항목 추가</button></div><label>할인<input name="discount_amount" type="number" min="0" step="100" value="${invoice.discount_amount || 0}" ${editable ? "" : "disabled"}></label>${deferredField}<div class="billing-total wide">총액 <strong data-invoice-total>${displayedTotal.toLocaleString("ko-KR")}원</strong> · 결제 ${Number(invoice.paid_amount || 0).toLocaleString("ko-KR")}원 · 잔액 <span data-invoice-balance>${balance.toLocaleString("ko-KR")}원</span></div><div class="commercial-actions wide">${editable ? `<button type="submit" class="secondary">청구서 저장</button><button type="button" class="primary" data-issue-invoice ${hasUnpricedMedication ? "disabled title=\"가격표에 없는 처방약 금액을 입력하세요.\"" : ""}>${hasUnpricedMedication ? "약품 가격 확인 필요" : "확인하고 청구서 발행"}</button>` : ""}</div></form>${paymentForms}</div>`;
     }
     if (type === "echo") {
         return `<div class="report-sheet"><header><p class="eyebrow">ECHOCARDIOGRAPHY REPORT</p><h2>Echo Report</h2><p>${escapeHtml(patientLine)} · ${escapeHtml(formatDate(state.encounter.visit_at, true))}</p></header><section><h3>Measurements</h3><p>LA/Ao ${formatMetric(exam.la_ao)} · LVIDd ${formatMetric(exam.lvidd_cm, "cm")} · LVIDDN ${formatMetric(exam.lviddn)} · LVIDs ${formatMetric(exam.lvids_cm, "cm")} · FS ${formatMetric(exam.fs_percent, "%")}</p><p>E ${formatMetric(exam.e_velocity_ms, "m/s")} · A ${formatMetric(exam.a_velocity_ms, "m/s")} · E/A ${formatMetric(exam.e_a_ratio)} · TR Vmax ${formatMetric(exam.tr_vmax_ms, "m/s")}</p></section><section><h3>Findings</h3><pre>${escapeHtml(exam.findings || "미입력")}</pre></section><section><h3>Assessment</h3><pre>${escapeHtml(exam.assessment || "미입력")}</pre><p>ACVIM ${escapeHtml(exam.acvim_stage || "미확정")} · PH 위험 ${escapeHtml(exam.ph_risk || "미입력")} · CHF ${escapeHtml(exam.chf_status || "미입력")}</p></section><p class="review-warning">수의사 검토 후 사용하십시오.</p></div>`;
@@ -1886,11 +2357,44 @@ async function saveInvoiceDraft() {
     return data.invoice;
 }
 
+function refreshInvoiceDraftTotal() {
+    const form = $("#invoice-form");
+    if (!form || state.commercial.invoice?.status && !["draft", "void"].includes(state.commercial.invoice.status)) return;
+    const items = collectRows("#invoice-items .invoice-item-row", "[data-invoice-field]");
+    const totals = invoiceDraftTotals(items, form.elements.discount_amount?.value, state.commercial.invoice?.paid_amount);
+    const total = $("[data-invoice-total]", form);
+    const balance = $("[data-invoice-balance]", form);
+    if (total) total.textContent = `${totals.total.toLocaleString("ko-KR")}원`;
+    if (balance) balance.textContent = `${totals.balance.toLocaleString("ko-KR")}원`;
+    const issue = $("[data-issue-invoice]", form);
+    const unpricedMedication = items.some((item) => item.item_code === "MED-UNPRICED" && Number(item.unit_amount || 0) <= 0);
+    if (issue) {
+        issue.disabled = unpricedMedication;
+        issue.textContent = unpricedMedication ? "약품 가격 확인 필요" : "확인하고 청구서 발행";
+        issue.title = unpricedMedication ? "가격표에 없는 처방약 금액을 입력하세요." : "";
+    }
+}
+
+$("#report-content").addEventListener("input", (event) => {
+    if (event.target.closest("#invoice-form")) refreshInvoiceDraftTotal();
+});
+
 $("#report-content").addEventListener("click", async (event) => {
     const remove = event.target.closest("[data-remove-row]");
-    if (remove) { remove.closest(".invoice-item-row, .prescription-item-row")?.remove(); return; }
+    if (remove) { remove.closest(".invoice-item-row, .prescription-item-row")?.remove(); refreshInvoiceDraftTotal(); return; }
     if (event.target.closest("[data-add-prescription-item]")) { $("#prescription-items").insertAdjacentHTML("beforeend", prescriptionItemHtml()); return; }
-    if (event.target.closest("[data-add-invoice-item]")) { $("#invoice-items").insertAdjacentHTML("beforeend", invoiceItemHtml()); return; }
+    if (event.target.closest("[data-add-invoice-item]")) { $("#invoice-items").insertAdjacentHTML("beforeend", invoiceItemHtml()); refreshInvoiceDraftTotal(); return; }
+    if (event.target.closest("[data-apply-invoice-suggestions]")) {
+        const suggestions = state.commercial.invoiceSuggestions || [];
+        $("#invoice-items").innerHTML = suggestions.map(invoiceItemHtml).join("");
+        const form = $("#invoice-form");
+        $(".billing-auto-notice", form)?.remove();
+        const reasons = suggestions.map((item) => `<li><strong>${escapeHtml(item.description)}</strong><span>${escapeHtml(item.source_note || "완료 기록에서 자동 추가")}${item.pricing_missing ? " · 가격표 등록 필요" : ""}</span></li>`).join("");
+        form.insertAdjacentHTML("afterbegin", `<div class="billing-auto-notice wide"><div><strong>완료 기록으로 청구 항목을 다시 만들었습니다.</strong><span>추가된 이유와 가격을 확인하세요.</span></div><ul>${reasons}</ul></div>`);
+        refreshInvoiceDraftTotal();
+        toast("완료된 진료 기록으로 청구 항목을 다시 만들었습니다.");
+        return;
+    }
     const receipt = event.target.closest("[data-receipt-id]");
     if (receipt) {
         receipt.disabled = true;
@@ -1999,9 +2503,8 @@ $("#report-content").addEventListener("submit", async (event) => {
             $("#report-content").innerHTML = reportHtml("billing");
             await Promise.all([loadTodayDashboard(), refreshCommercialState()]);
             if (Number(data.invoice.paid_amount) >= Number(data.invoice.total_amount)) {
-                navigateView("patients");
-                $("#encounter-workspace").scrollIntoView({behavior: "smooth", block: "start"});
-                toast(`결제와 영수증 ${data.receipt_number}을 기록했습니다. 진료완료를 눌러 종료하세요.`);
+                $("#report-content").scrollIntoView({behavior: "smooth", block: "start"});
+                toast(`결제가 완료되었습니다. 영수증 ${data.receipt_number}을 확인한 뒤 진료를 종료하세요.`);
             } else {
                 toast(`결제와 영수증 ${data.receipt_number}을 기록했습니다.`);
             }
@@ -2135,6 +2638,21 @@ async function refreshAfterXray() {
     setDiagnosticTab("xray");
 }
 
+async function autosaveXrayReading(encounterId, xrayId, readingText) {
+    const updated = await api(`/api/xrays/${xrayId}`, {method: "PATCH", body: {reading_text: readingText}});
+    if (state.encounter?.id !== encounterId) return;
+    const xray = state.encounter.xrays?.find((item) => item.id === xrayId);
+    if (xray) xray.reading_text = updated.reading_text;
+    const [soap, workflow] = await Promise.all([
+        api(`/api/encounters/${encounterId}/soap`),
+        api(`/api/encounters/${encounterId}/workflow`),
+    ]);
+    state.soap = soap;
+    state.commercial.workflow = workflow;
+    renderSoap();
+    renderWorkflow();
+}
+
 function bindXrayControls(root) {
     const form = $(".xray-form", root);
     if (!form) return;
@@ -2167,6 +2685,13 @@ function bindXrayControls(root) {
             handleError(error);
             button.disabled = false;
         }
+    }));
+    $$(".xray-reading", root).forEach((textarea) => textarea.addEventListener("input", () => {
+        if (!state.encounter) return;
+        const card = textarea.closest("[data-xray]");
+        const encounterId = state.encounter.id;
+        const readingText = textarea.value;
+        scheduleAutosave(`xray-${card.dataset.xray}`, () => autosaveXrayReading(encounterId, card.dataset.xray, readingText));
     }));
 }
 
@@ -2230,13 +2755,41 @@ async function generateSoapStage(stage) {
     toast("AI 초안을 생성했습니다.");
 }
 
+async function autosaveSoapDraft(encounterId, stage, content, diagnosisName) {
+    const draft = await api(`/api/encounters/${encounterId}/soap/${stage}/draft`, {
+        method: "PATCH",
+        body: {content, ...(stage === "A" ? {diagnosis_name: diagnosisName} : {})},
+    });
+    if (state.encounter?.id !== encounterId) return;
+    const section = state.soap?.sections?.find((item) => item.stage === stage);
+    if (section) {
+        section.draft_text = draft.draft_text;
+        section.draft_diagnosis_name = draft.draft_diagnosis_name;
+        section.draft_updated_at = draft.draft_updated_at;
+        section.status = draft.status || section.status;
+    }
+    if (draft.workflow_invalidated) {
+        const [soap, workflow] = await Promise.all([
+            api(`/api/encounters/${encounterId}/soap`),
+            api(`/api/encounters/${encounterId}/workflow`),
+        ]);
+        state.soap = soap;
+        state.commercial.workflow = workflow;
+        state.encounter.workflow_stage = state.commercial.workflow.stage;
+        reflectEncounterStatus();
+        renderEncounters();
+        renderWorkflow();
+    }
+}
+
 function renderSoap() {
     const root = $("#soap-steps");
     const canClinicallyEdit = state.user?.role === "veterinarian" && state.commercial.workflow?.stage !== "closed";
     const focus = focusStage(state.soap.sections);
     root.innerHTML = state.soap.sections.map((section) => {
         const stale = section.status === "stale";
-        const current = section.current_text || "";
+        const hasDraft = section.draft_text !== null && section.draft_text !== undefined;
+        const current = hasDraft ? section.draft_text : (section.current_text || "");
         const preview = current.replace(/\s+/g, " ").trim();
         const expanded = section.stage === focus;
         const candidatesOpen = expanded && (section.status === "generated" || section.status === "stale");
@@ -2287,9 +2840,10 @@ function renderSoap() {
                             <div class="candidates">${candidates}</div>
                         </details>
                     ` : ""}
+                    ${hasDraft ? '<p class="soap-draft-note">작성 중 초안이 자동 저장되었습니다.</p>' : ""}
                     ${section.stage === "A" ? `
                         <label>진단명
-                            <input class="assessment-diagnosis" maxlength="255" placeholder="진단명을 입력하세요." value="${escapeHtml(section.diagnosis_name || "")}" ${section.unlocked && canClinicallyEdit ? "" : "disabled"}>
+                            <input class="assessment-diagnosis" maxlength="255" placeholder="진단명을 입력하세요." value="${escapeHtml(hasDraft ? (section.draft_diagnosis_name || "") : (section.diagnosis_name || ""))}" ${section.unlocked && canClinicallyEdit ? "" : "disabled"}>
                         </label>
                     ` : ""}
                     <label>SOAP 기록<textarea class="soap-editor" rows="6" ${section.unlocked && canClinicallyEdit ? "" : "disabled"}>${escapeHtml(current)}</textarea></label>
@@ -2310,15 +2864,35 @@ function bindSoapStep(step) {
         step.classList.toggle("collapsed", !expanded);
         header.setAttribute("aria-expanded", String(expanded));
     });
+    const scheduleDraft = () => {
+        if (!state.encounter) return;
+        const encounterId = state.encounter.id;
+        const content = $(".soap-editor", step).value;
+        const diagnosisName = stage === "A" ? $(".assessment-diagnosis", step).value : null;
+        scheduleAutosave(`soap-${stage}`, () => autosaveSoapDraft(encounterId, stage, content, diagnosisName), 900);
+    };
+    $(".soap-editor", step).addEventListener("input", scheduleDraft);
+    $(".assessment-diagnosis", step)?.addEventListener("input", scheduleDraft);
+    $(".objective-source", step)?.addEventListener("input", (event) => {
+        const form = $("#encounter-edit-form");
+        form.elements.physical_exam.value = event.target.value;
+        const encounterId = state.encounter.id;
+        const payload = encounterEditPayload(form);
+        scheduleAutosave("encounter", () => saveEncounterEdits(encounterId, payload, true));
+    });
     $$('[data-symptom]', step).forEach((input) => input.addEventListener("change", () => {
         const target = $("#cardiac-exam-form").elements[input.dataset.symptom];
-        if (target) target.checked = input.checked;
+        if (target) {
+            target.checked = input.checked;
+            target.dispatchEvent(new Event("input", {bubbles: true}));
+        }
     }));
     $(".generate", step).addEventListener("click", async (event) => {
         const button = event.currentTarget;
         button.disabled = true;
         button.textContent = "AI 생성 중…";
         try {
+            await flushAutosaves();
             if (stage === "O") {
                 const physicalExam = $(".objective-source", step).value.trim();
                 if (!physicalExam) {
@@ -2345,6 +2919,7 @@ function bindSoapStep(step) {
         state.selectedCandidates[stage] = card.dataset.candidate;
         $(".soap-editor", step).value = $("p", card).textContent;
         $$(".candidate", step).forEach((item) => item.classList.toggle("selected", item === card));
+        scheduleDraft();
     }));
     $(".confirm", step).addEventListener("click", async (event) => {
         const button = event.currentTarget;
@@ -2354,6 +2929,7 @@ function bindSoapStep(step) {
         if (stage === "A" && !diagnosisName) return toast("진단명을 입력하세요.", "error");
         button.disabled = true;
         try {
+            await flushAutosaves();
             state.soap = await api(`/api/encounters/${state.encounter.id}/soap/${stage}/confirm`, {
                 method: "PUT",
                 body: {
@@ -2413,6 +2989,38 @@ async function loadUsers() {
     $("#user-list").innerHTML = data.items.map((item) => `<span class="tag">${escapeHtml(item.username)} · ${item.role === "staff" ? "스태프" : "수의사"}${item.is_active ? "" : " · 비활성"}</span>`).join("");
 }
 
+async function loadBillingCatalog() {
+    const section = $("#billing-catalog-section");
+    if (state.user?.role !== "veterinarian") {
+        section.classList.add("hidden");
+        return;
+    }
+    section.classList.remove("hidden");
+    const [data, medications] = await Promise.all([
+        api("/api/admin/billing-catalog"),
+        api("/api/admin/medication-billing-catalog"),
+    ]);
+    $("#billing-catalog-list").innerHTML = data.items.map((item) => `
+        <div class="billing-catalog-row" data-catalog-code="${escapeHtml(item.code)}">
+            <label class="catalog-active"><input data-catalog-field="is_active" type="checkbox" ${item.is_active ? "checked" : ""}> 사용</label>
+            <label>항목명<input data-catalog-field="description" maxlength="255" value="${escapeHtml(item.description)}"></label>
+            <label>금액<input data-catalog-field="unit_amount" type="number" min="0" step="100" value="${Number(item.unit_amount)}"></label>
+        </div>`).join("");
+    $("#medication-billing-catalog-list").innerHTML = medications.items.length
+        ? medications.items.map(medicationPriceRowHtml).join("")
+        : '<p class="muted small medication-price-empty">등록된 약품이 없습니다. 약품 추가를 누르세요.</p>';
+}
+
+function medicationPriceRowHtml(item = {}) {
+    return `<div class="medication-price-row">
+        <label class="catalog-active"><input data-medication-price-field="is_active" type="checkbox" ${item.is_active ? "checked" : ""}> 사용</label>
+        <label>처방 약품명<input data-medication-price-field="medication_name" maxlength="255" value="${escapeHtml(item.medication_name || "")}" placeholder="처방전 이름과 같게"></label>
+        <label>청구 항목명<input data-medication-price-field="billing_description" maxlength="255" value="${escapeHtml(item.billing_description || "")}" placeholder="예: 피모벤단 약제비"></label>
+        <label>처방 1건 가격<input data-medication-price-field="unit_amount" type="number" min="0" step="100" value="${Number(item.unit_amount || 0)}"></label>
+        ${item.id ? "" : '<button type="button" class="danger-ghost" data-remove-medication-price>삭제</button>'}
+    </div>`;
+}
+
 async function loadAuditEvents() {
     let root = $("#audit-event-list");
     if (!root) {
@@ -2436,13 +3044,73 @@ $("#user-form").addEventListener("submit", async (event) => {
     } catch (error) { handleError(error); } finally { button.disabled = false; }
 });
 
+$("#billing-catalog-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const button = $("button", form);
+    const items = $$("[data-catalog-code]", form).map((row) => ({
+        code: row.dataset.catalogCode,
+        description: $('[data-catalog-field="description"]', row).value.trim(),
+        unit_amount: Number($('[data-catalog-field="unit_amount"]', row).value),
+        is_active: $('[data-catalog-field="is_active"]', row).checked,
+    }));
+    button.disabled = true;
+    try {
+        await api("/api/admin/billing-catalog", {method: "PUT", body: {items}});
+        toast("자동 청구 가격표를 저장했습니다.");
+    } catch (error) { handleError(error); } finally { button.disabled = false; }
+});
+
+$("[data-add-medication-price]").addEventListener("click", () => {
+    $(".medication-price-empty")?.remove();
+    $("#medication-billing-catalog-list").insertAdjacentHTML("beforeend", medicationPriceRowHtml({is_active: true}));
+});
+
+$("#medication-billing-catalog-list").addEventListener("click", (event) => {
+    event.target.closest("[data-remove-medication-price]")?.closest(".medication-price-row")?.remove();
+});
+
+$("#medication-billing-catalog-list").addEventListener("input", (event) => {
+    if (event.target.dataset.medicationPriceField !== "unit_amount" || Number(event.target.value) <= 0) return;
+    const row = event.target.closest(".medication-price-row");
+    $('[data-medication-price-field="is_active"]', row).checked = true;
+});
+
+$("#medication-billing-catalog-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const button = $('button[type="submit"]', form);
+    const status = $("#medication-price-save-status");
+    const items = $$(".medication-price-row", form).map((row) => ({
+        medication_name: $('[data-medication-price-field="medication_name"]', row).value.trim(),
+        billing_description: $('[data-medication-price-field="billing_description"]', row).value.trim(),
+        unit_amount: Number($('[data-medication-price-field="unit_amount"]', row).value),
+        is_active: $('[data-medication-price-field="is_active"]', row).checked,
+    })).filter((item) => item.medication_name);
+    button.disabled = true;
+    button.textContent = "저장 중…";
+    status.textContent = "";
+    try {
+        await api("/api/admin/medication-billing-catalog", {method: "PUT", body: {items}});
+        await loadBillingCatalog();
+        status.textContent = "저장 완료 ✓ · 이후 새 청구서부터 자동 적용됩니다.";
+        toast("약품별 자동 청구 가격을 저장했습니다.");
+    } catch (error) {
+        status.textContent = "저장하지 못했습니다. 입력값을 확인하세요.";
+        handleError(error);
+    } finally {
+        button.disabled = false;
+        button.textContent = "약품 가격표 저장";
+    }
+});
+
 function openAdminDrawer() {
     $("#admin-drawer").classList.add("open");
     $("#admin-backdrop").classList.add("open");
     $("#admin-drawer").setAttribute("aria-hidden", "false");
     $("#admin-tools-button").setAttribute("aria-expanded", "true");
     document.body.classList.add("drawer-open");
-    Promise.all([loadUsers(), loadAuditEvents()]).catch(handleError);
+    Promise.all([loadUsers(), loadBillingCatalog(), loadAuditEvents()]).catch(handleError);
     $("#admin-drawer-close").focus();
 }
 
@@ -2574,10 +3242,17 @@ function handleError(error) {
         diagnostic_result_required: "검사 결과를 먼저 기록한 뒤 검토 완료로 변경하세요.",
         daily_close_blocked: "미청구 진료를 먼저 처리한 뒤 일마감하세요.",
         invoice_outdated: "임상 기록 변경 후 청구서를 다시 확인·발행하세요.",
+        medication_price_required: "가격표에 없는 처방약의 금액을 확인하세요.",
         workflow_stage_required: "현재 진료 단계를 먼저 완료한 뒤 진행하세요.",
     };
     const blockerMessage = error.data?.blockers?.map((item) => item.message).join(" · ");
     toast(blockerMessage || messages[error.data?.error] || error.message || "요청을 처리하지 못했습니다.", "error");
 }
+
+window.addEventListener("beforeunload", (event) => {
+    if (!autosaveJobs.size && !failedAutosaves.size && !invalidAutosaves.size) return;
+    event.preventDefault();
+    event.returnValue = "";
+});
 
 bootstrap();

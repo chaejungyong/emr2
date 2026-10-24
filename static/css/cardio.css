@@ -9,6 +9,7 @@
 
 body { overflow: hidden; }
 .app-view { min-height: 100vh; }
+.app-view.has-care-action .view-stack { height: calc(100vh - 138px); }
 .topbar { position: relative; z-index: 40; height: 68px; padding: 0 1rem; justify-content: flex-start; box-shadow: 0 2px 14px rgba(9, 38, 34, .12); }
 .brand-inline { flex: 0 0 auto; padding: 0; border: 0; color: #fff; background: transparent; }
 .brand-inline strong { white-space: nowrap; }
@@ -59,13 +60,15 @@ body { overflow: hidden; }
 #patients-view.active { display: grid; grid-template-columns: 310px minmax(0, 1fr); gap: 1rem; }
 .patient-browser { height: 100%; padding: 1rem; overflow: auto; }
 .patient-empty { display: grid; place-content: center; justify-items: center; min-height: 70vh; color: var(--muted); text-align: center; }
-.patient-workspace { grid-column: 1 / -1; min-width: 0; padding-bottom: 66px; }
+.patient-workspace { grid-column: 1 / -1; min-width: 0; }
 .patient-banner { top: -1.15rem; display: grid; grid-template-columns: auto minmax(0,1fr) auto; align-items: center; gap: .9rem; padding: .8rem 1rem; }
 .patient-identity { min-width: 0; }
 .patient-title-line h1 { font-size: 1.35rem; }
 .patient-cardiac-badges { display: flex; flex-wrap: wrap; gap: .4rem; margin-top: .55rem; }
 .patient-cardiac-badges span { padding: .25rem .5rem; border-radius: 999px; color: var(--teal-dark); background: var(--teal-soft); font-size: .68rem; font-weight: 800; }
 .cardio-chart-grid { display: grid; grid-template-columns: 270px minmax(650px, 1fr) 310px; gap: .9rem; align-items: start; }
+.patient-workspace.workflow-focus-mode .cardio-chart-grid { grid-template-columns: minmax(0, 1100px); justify-content: center; }
+.patient-workspace.workflow-focus-mode .chart-left, .patient-workspace.workflow-focus-mode .chart-right { display: none; }
 .chart-left, .chart-right { display: grid; gap: .9rem; }
 .patient-summary-card, .timeline-card, .cardio-summary-card { padding: 1rem; }
 .summary-list { display: grid; grid-template-columns: auto 1fr; gap: .45rem .7rem; margin: 1rem 0; font-size: .76rem; }
@@ -87,6 +90,7 @@ body { overflow: hidden; }
 .test-shortcuts { display: flex; flex-wrap: wrap; gap: .38rem; }
 .test-shortcuts button { padding: .45rem .65rem; border-color: #c9e3dd; color: var(--teal-dark); background: var(--teal-soft); }
 .soap-panel { padding: .9rem; }
+.soap-draft-note { margin: 0; color: var(--teal); font-size: .7rem; font-weight: 750; }
 .stage-label { flex-basis: 158px; }
 .objective-vitals { display: flex; flex-wrap: wrap; gap: .45rem; }
 .objective-vitals span { padding: .42rem .58rem; border-radius: 8px; color: var(--muted); background: #f3f7f5; font-size: .72rem; }
@@ -102,8 +106,24 @@ body { overflow: hidden; }
 .classification-row strong { color: var(--teal-dark); }
 .change-alerts { display: grid; gap: .4rem; margin-top: .9rem; }
 .change-alert { padding: .55rem; border-radius: 8px; color: #8d3434; background: #fff0f0; font-size: .7rem; font-weight: 750; }
-.patient-action-bar { position: fixed; right: 0; bottom: 0; left: 0; z-index: 25; display: flex; align-items: center; justify-content: center; gap: .5rem; height: 60px; padding: .55rem 1rem; border-top: 1px solid var(--line); background: rgba(255,255,255,.96); box-shadow: 0 -6px 20px rgba(24,52,47,.07); backdrop-filter: blur(8px); }
-.patient-action-bar button { min-width: 112px; }
+.care-action-bar { position: fixed; right: 0; bottom: 0; left: 0; z-index: 35; display: flex; align-items: center; justify-content: space-between; gap: 1rem; min-height: 70px; padding: .7rem max(1rem, calc((100vw - 1500px) / 2)); border-top: 1px solid #cddbd6; background: rgba(255,255,255,.97); box-shadow: 0 -8px 28px rgba(24,52,47,.1); backdrop-filter: blur(10px); }
+.care-action-context { display: flex; align-items: center; gap: .75rem; min-width: 0; }
+.care-stage-label { color: var(--teal-dark); font-size: .82rem; font-weight: 850; white-space: nowrap; }
+.autosave-indicator { display: inline-flex; align-items: center; gap: .38rem; color: var(--muted); font-size: .72rem; white-space: nowrap; }
+.autosave-indicator::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: #79bba9; }
+.autosave-indicator.dirty::before { background: var(--gold); }
+.autosave-indicator.saving::before { background: var(--teal); animation: autosave-pulse 1s ease-in-out infinite; }
+.autosave-indicator.error { color: var(--danger); }
+.autosave-indicator.error::before { background: var(--danger); }
+.care-action-controls { display: flex; align-items: center; justify-content: flex-end; gap: .5rem; }
+.care-action-controls button { min-width: 104px; }
+#care-next-action { min-width: 210px; }
+.workflow-focus-card { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: 1rem 1.1rem; margin-bottom: .8rem; border-color: #bcded5; background: linear-gradient(110deg, #f2faf7, #fff); }
+.workflow-focus-card p { margin-bottom: 0; }
+.focus-count { flex: 0 0 auto; padding: .38rem .62rem; border-radius: 999px; color: #795720; background: var(--warning-soft); font-size: .7rem; font-weight: 850; }
+.focus-hidden { display: none !important; }
+.inline-save-note { align-self: center; margin-right: auto; color: var(--muted); font-size: .72rem; }
+@keyframes autosave-pulse { 50% { opacity: .35; transform: scale(.78); } }
 .workflow-panel { display: grid; gap: .8rem; margin-bottom: 1rem; padding: 1rem; }
 .workflow-panel .section-title { margin-bottom: 0; }
 .workflow-steps { display: grid; grid-template-columns: repeat(7, minmax(75px, 1fr)); gap: .35rem; }
@@ -211,6 +231,22 @@ body { overflow: hidden; }
 .report-entry-form > button { justify-self: start; min-width: 150px; }
 .billing-total { display: flex; justify-content: flex-end; align-items: baseline; gap: 1rem; padding: 1rem; border-radius: 9px; color: var(--teal-dark); background: var(--teal-soft); font-size: 1rem; }
 .billing-total strong { font-size: 1.5rem; }
+.billing-auto-notice { display: grid; grid-template-columns: minmax(190px, .8fr) minmax(260px, 1.2fr); gap: .75rem 1.25rem; padding: .85rem 1rem; border: 1px solid #b9ddd5; border-radius: 9px; color: var(--teal-dark); background: #effaf7; }
+.billing-auto-notice div, .billing-auto-notice li { display: grid; gap: .15rem; }
+.billing-auto-notice ul { display: grid; gap: .45rem; margin: 0; padding-left: 1.1rem; }
+.billing-auto-notice span { color: var(--muted); font-size: .72rem; }
+.payment-complete-banner { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 1rem; margin-bottom: 1rem; padding: 1rem 1.1rem; border: 1px solid #8ecdbd; border-radius: 12px; color: var(--teal-dark); background: linear-gradient(120deg, #eaf8f4, #f8fffc); }
+.payment-complete-banner div { display: grid; gap: .2rem; }
+.payment-complete-banner p { margin: 0; font-weight: 850; }
+.payment-complete-banner strong { font-size: 1.25rem; }
+.payment-complete-banner span { color: var(--muted); font-size: .72rem; }
+.payment-complete-check { display: grid; place-items: center; width: 42px; height: 42px; border-radius: 50%; color: #fff !important; background: var(--teal); font-size: 1.25rem !important; font-weight: 900; }
+.billing-catalog-list { display: grid; gap: .6rem; }
+.billing-catalog-row { display: grid; grid-template-columns: 70px minmax(130px, 1fr) 120px; gap: .5rem; align-items: end; padding: .65rem; border: 1px solid var(--line); border-radius: 8px; }
+.billing-catalog-row .catalog-active, .medication-price-row .catalog-active { align-self: center; display: flex; flex-direction: row; gap: .35rem; align-items: center; white-space: nowrap; }
+.admin-subsection-heading { display: flex; align-items: baseline; justify-content: space-between; gap: .5rem; margin: 1.2rem 0 .65rem; padding-top: 1rem; border-top: 1px solid var(--line); }
+.inline-save-status { min-height: 1.2rem; margin: 0; color: var(--teal); font-size: .72rem; font-weight: 800; }
+.medication-price-row, .medication-price-row:has([data-remove-medication-price]) { display: grid; grid-template-columns: 1fr; gap: .5rem; align-items: end; padding: .65rem; border: 1px solid var(--line); border-radius: 8px; }
 
 @media (max-width: 1450px) {
     .topbar .badge { display: none; }
@@ -228,6 +264,7 @@ body { overflow: hidden; }
     .primary-nav { order: 3; width: 100%; height: 44px; margin-left: 0; overflow-x: auto; }
     .topbar-actions { margin-left: auto; }
     .view-stack { height: auto; min-height: calc(100vh - 112px); }
+    .app-view.has-care-action .view-stack { height: auto; min-height: calc(100vh - 182px); padding-bottom: 70px; }
     .app-page { height: auto; min-height: calc(100vh - 112px); }
     #patients-view.active { grid-template-columns: 1fr; }
     .patient-browser { height: auto; }
@@ -241,7 +278,11 @@ body { overflow: hidden; }
     .workflow-steps { grid-template-columns: repeat(4,1fr); }
     .diagnostic-plan-items { grid-template-columns: repeat(2,1fr); }
     .invoice-item-row, .prescription-item-row { grid-template-columns: repeat(2,1fr); }
-    .patient-action-bar { overflow-x: auto; justify-content: flex-start; }
+    .billing-catalog-row, .medication-price-row, .medication-price-row:has([data-remove-medication-price]) { grid-template-columns: 1fr; }
+    .billing-auto-notice { grid-template-columns: 1fr; }
+    .payment-complete-banner { grid-template-columns: auto 1fr; }
+    .payment-complete-banner button { grid-column: 1 / -1; }
+    .care-action-bar { padding-inline: .8rem; }
     .trend-charts { grid-template-columns: 1fr; }
     .monitoring-form { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .schedule-layout { grid-template-columns: 1fr; }
@@ -253,10 +294,16 @@ body { overflow: hidden; }
 @media (max-width: 640px) {
     .monitoring-form { grid-template-columns: 1fr; }
     .monitoring-form .wide { grid-column: auto; }
+    .app-view.has-care-action .view-stack { min-height: calc(100vh - 154px); padding-bottom: 84px; }
+    .care-action-bar { align-items: stretch; flex-direction: column; gap: .45rem; }
+    .care-action-context, .care-action-controls { justify-content: space-between; }
+    .care-action-controls { display: grid; grid-template-columns: auto minmax(0, 1fr); }
+    #care-next-action { min-width: 0; }
+    .compact-save { display: none !important; }
 }
 
 @media print {
-    .topbar, .page-heading, .report-actions, .admin-drawer, .admin-backdrop, .toast-region, .report-entry-form > button { display: none !important; }
+    .topbar, .care-action-bar, .page-heading, .report-actions, .admin-drawer, .admin-backdrop, .toast-region, .report-entry-form > button { display: none !important; }
     body, .view-stack, .app-page { height: auto; overflow: visible; background: #fff; }
     .app-page { display: none !important; }
     #report-view { display: block !important; padding: 0; }

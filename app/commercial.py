@@ -127,6 +127,66 @@ def _invoice(encounter_id):
     return row
 
 
+def _suggested_invoice_items(encounter_id):
+    """Build billable rows from completed work and the clinic fee catalog."""
+    reviewed_exams = {
+        row["exam_type"]
+        for row in fetch_all(
+            "SELECT exam_type FROM diagnostic_requirements WHERE encounter_id=%s AND status='reviewed'",
+            (encounter_id,),
+        )
+    }
+    prescription = _active_prescription(encounter_id)
+    prescribed_items = (
+        prescription.get("items", [])
+        if prescription and prescription.get("status") == "issued"
+        else []
+    )
+    catalog = fetch_all(
+        "SELECT code,description,unit_amount,match_type,match_value FROM billing_catalog_items WHERE is_active=TRUE ORDER BY position_no,code"
+    )
+    suggestions = []
+    for item in catalog:
+        matched = item["match_type"] == "consultation"
+        if item["match_type"] == "diagnostic":
+            matched = item.get("match_value") in reviewed_exams
+        if matched:
+            suggestions.append(
+                {
+                    "item_code": item["code"],
+                    "description": item["description"],
+                    "quantity": 1,
+                    "unit_amount": float(item["unit_amount"]),
+                    "source_note": (
+                        "모든 진료에 기본 적용"
+                        if item["match_type"] == "consultation"
+                        else f"{str(item.get('match_value') or '').upper()} 검사 검토 완료"
+                    ),
+                }
+            )
+    medication_prices = {
+        row["medication_name"].strip().casefold(): row
+        for row in fetch_all(
+            "SELECT id,medication_name,billing_description,unit_amount FROM medication_billing_catalog WHERE is_active=TRUE ORDER BY medication_name"
+        )
+    }
+    for prescription_item in prescribed_items:
+        name = str(prescription_item.get("medication_name") or "").strip()
+        price = medication_prices.get(name.casefold())
+        duration = prescription_item.get("duration_days")
+        suggestions.append(
+            {
+                "item_code": f"MED-{price['id'][:8].upper()}" if price else "MED-UNPRICED",
+                "description": price["billing_description"] if price else f"{name} 약제비 (가격 확인 필요)",
+                "quantity": 1,
+                "unit_amount": float(price["unit_amount"]) if price else 0,
+                "source_note": f"발행 처방: {name}{f' · {duration}일' if duration else ''}",
+                "pricing_missing": not bool(price),
+            }
+        )
+    return suggestions
+
+
 def _latest_education(encounter_id):
     return fetch_one(
         "SELECT * FROM client_education_documents WHERE encounter_id=%s ORDER BY version_no DESC LIMIT 1",
@@ -647,7 +707,13 @@ def save_structured_prescription(encounter_id):
 def get_invoice(encounter_id):
     if not _encounter(encounter_id):
         return jsonify({"error": "encounter_not_found"}), 404
-    return jsonify({"invoice": _invoice(encounter_id)})
+    invoice = _invoice(encounter_id)
+    return jsonify(
+        {
+            "invoice": invoice,
+            "suggested_items": _suggested_invoice_items(encounter_id),
+        }
+    )
 
 
 @bp.put("/encounters/<encounter_id>/invoice")
@@ -727,6 +793,16 @@ def issue_invoice(encounter_id):
         return jsonify({"error": "invoice_not_found"}), 404
     if invoice["status"] != "draft":
         return jsonify({"error": "invoice_already_issued"}), 409
+    if any(
+        item.get("item_code") == "MED-UNPRICED" and item.get("unit_amount", 0) <= 0
+        for item in invoice.get("items", [])
+    ):
+        return jsonify(
+            {
+                "error": "medication_price_required",
+                "message": "가격표에 없는 처방약의 금액을 확인하세요.",
+            }
+        ), 409
     with transaction():
         execute(
             "UPDATE invoices SET status=%s,issued_at=%s,issued_by=%s WHERE id=%s",

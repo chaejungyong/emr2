@@ -60,7 +60,7 @@ def test_clinical_forms_keep_independent_submit_controls():
     xray_root = html.index('id="diagnostic-xray-root"')
 
     assert cardiac_end < xray_root
-    assert '<button type="submit" class="secondary">진료정보 저장</button>' in html
+    assert '<button type="submit" class="secondary">지금 저장</button>' in html
     assert "datetimeLocalValue(new Date().toISOString())" not in javascript
     assert javascript.count('name="paid_at" type="datetime-local" value="${currentDatetimeLocal()}"') == 2
     assert javascript.count('name="amount" type="number" min="1" max="${balance}" step="1"') == 1
@@ -69,6 +69,10 @@ def test_clinical_forms_keep_independent_submit_controls():
     assert 'addEventListener("invalid"' in javascript
     assert 'id="agent-review-progress"' in html
     assert "다른 업무를 해도 됩니다." in javascript
+    assert 'id="autosave-indicator"' in html
+    assert 'id="care-next-action"' in html
+    assert 'data-focus-stages="documentation"' in html
+    assert 'scheduleAutosave(`soap-${stage}`' in javascript
 
 
 def test_api_url_accepts_root_or_v1_base():
@@ -1587,6 +1591,95 @@ def test_assessment_diagnosis_name_is_required_and_normalized():
         validate_diagnosis_name("A", "  ")
     with pytest.raises(ValueError, match="diagnosis_name_too_long"):
         validate_diagnosis_name("A", "진" * 256)
+
+
+def test_soap_draft_autosave_does_not_confirm_section(monkeypatch):
+    from app import soap
+
+    app = Flask(__name__)
+    app.secret_key = "test-secret"
+    app.register_blueprint(soap.bp)
+    statements = []
+    sections = {
+        stage: {
+            "id": f"section-{stage}",
+            "status": "confirmed" if stage == "S" else "pending",
+            "draft_text": None,
+            "draft_diagnosis_name": None,
+            "draft_updated_at": None,
+        }
+        for stage in ("S", "O", "A", "P")
+    }
+    monkeypatch.setattr(soap, "encounter_is_closed", lambda *_args: False)
+    monkeypatch.setattr(soap, "ensure_document", lambda *_args: {"id": "soap-1", "encounter_id": "encounter-1"})
+    monkeypatch.setattr(soap, "section_rows", lambda *_args: sections)
+    monkeypatch.setattr(soap, "transaction", nullcontext)
+    monkeypatch.setattr(soap, "execute", lambda sql, params=(): statements.append((sql, params)))
+
+    client = app.test_client()
+    with client.session_transaction() as session:
+        session["admin_id"] = "vet-1"
+        session["role"] = "veterinarian"
+    response = client.patch(
+        "/api/encounters/encounter-1/soap/O/draft",
+        json={"content": "작성 중 객관적 소견"},
+    )
+
+    assert response.status_code == 200
+    assert response.get_json()["draft_text"] == "작성 중 객관적 소견"
+    assert len(statements) == 1
+    sql, params = statements[0]
+    assert "SET draft_text" in sql
+    assert "status = 'confirmed'" not in sql
+    assert params[0] == "작성 중 객관적 소견"
+    soap_source = (Path(__file__).parents[1] / "app" / "soap.py").read_text(encoding="utf-8")
+    assert "draft_text = NULL" in soap_source
+    assert (Path(__file__).parents[1] / "sql" / "014_soap_section_drafts.sql").exists()
+
+
+def test_editing_confirmed_soap_draft_invalidates_downstream(monkeypatch):
+    from app import soap
+
+    app = Flask(__name__)
+    app.secret_key = "test-secret"
+    app.register_blueprint(soap.bp)
+    statements = []
+    invalidations = []
+    sections = {
+        stage: {
+            "id": f"section-{stage}",
+            "status": "confirmed",
+            "current_text": f"확정 {stage}",
+            "diagnosis_name": "기존 진단" if stage == "A" else None,
+            "draft_text": None,
+            "draft_diagnosis_name": None,
+            "draft_updated_at": None,
+        }
+        for stage in ("S", "O", "A", "P")
+    }
+    monkeypatch.setattr(soap, "encounter_is_closed", lambda *_args: False)
+    monkeypatch.setattr(soap, "ensure_document", lambda *_args: {"id": "soap-1", "encounter_id": "encounter-1"})
+    monkeypatch.setattr(soap, "section_rows", lambda *_args: sections)
+    monkeypatch.setattr(soap, "transaction", nullcontext)
+    monkeypatch.setattr(soap, "execute", lambda sql, params=(): statements.append((sql, params)))
+    monkeypatch.setattr(soap, "invalidate_workflow", lambda encounter_id, stage: invalidations.append((encounter_id, stage)))
+    monkeypatch.setattr(soap, "audit", lambda *_args, **_kwargs: None)
+
+    client = app.test_client()
+    with client.session_transaction() as session:
+        session["admin_id"] = "vet-1"
+        session["role"] = "veterinarian"
+    response = client.patch(
+        "/api/encounters/encounter-1/soap/A/draft",
+        json={"content": "수정 중 A", "diagnosis_name": "수정 진단"},
+    )
+
+    assert response.status_code == 200
+    assert response.get_json()["status"] == "stale"
+    assert response.get_json()["workflow_invalidated"] is True
+    assert invalidations == [("encounter-1", "documentation")]
+    assert any("UPDATE soap_documents SET status = 'draft'" in sql for sql, _params in statements)
+    assert any("stage IN" in sql for sql, _params in statements)
 
 
 def test_api_guard_requires_session_and_csrf(monkeypatch):

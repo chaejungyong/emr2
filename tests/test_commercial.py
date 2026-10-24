@@ -5,7 +5,7 @@ from datetime import date, datetime
 from flask import Flask
 
 from app import commercial
-from app.commercial import _dose, present_workflow, workflow_blockers
+from app.commercial import _dose, _suggested_invoice_items, present_workflow, workflow_blockers
 
 
 def encounter(**overrides):
@@ -145,6 +145,98 @@ def test_staff_can_advance_intake_and_checkout_but_not_clinical_stages():
 
 def test_prescription_dose_preserves_four_decimal_precision():
     assert _dose("0.0625") == Decimal("0.0625")
+
+
+def test_invoice_suggestions_follow_reviewed_work_and_issued_prescription(monkeypatch):
+    catalog = [
+        {"code": "CONSULT", "description": "심장 진찰료", "unit_amount": Decimal("30000"), "match_type": "consultation", "match_value": None},
+        {"code": "ECHO", "description": "심장초음파 검사", "unit_amount": Decimal("150000"), "match_type": "diagnostic", "match_value": "echo"},
+        {"code": "LAB", "description": "혈액 검사", "unit_amount": Decimal("50000"), "match_type": "diagnostic", "match_value": "lab"},
+        {"code": "MED", "description": "조제·약제비", "unit_amount": Decimal("50000"), "match_type": "prescription", "match_value": None},
+    ]
+
+    def fake_fetch_all(sql, _params=()):
+        if "FROM diagnostic_requirements" in sql:
+            return [{"exam_type": "echo"}]
+        if "FROM billing_catalog_items" in sql:
+            return catalog
+        if "FROM medication_billing_catalog" in sql:
+            return [
+                {
+                    "id": "med-price-12345678",
+                    "medication_name": "피모벤단",
+                    "billing_description": "피모벤단 약제비",
+                    "unit_amount": Decimal("50000"),
+                }
+            ]
+        return []
+
+    monkeypatch.setattr(commercial, "fetch_all", fake_fetch_all)
+    monkeypatch.setattr(
+        commercial,
+        "_active_prescription",
+        lambda _encounter_id: {"status": "issued", "items": [{"medication_name": "피모벤단"}]},
+    )
+
+    suggestions = _suggested_invoice_items("encounter-1")
+
+    assert [item["item_code"] for item in suggestions] == ["CONSULT", "ECHO", "MED-MED-PRIC"]
+    assert sum(item["unit_amount"] for item in suggestions) == 230000
+
+
+def test_invoice_suggestion_marks_an_unpriced_prescribed_medication(monkeypatch):
+    def fake_fetch_all(sql, _params=()):
+        if "FROM billing_catalog_items" in sql:
+            return []
+        return []
+
+    monkeypatch.setattr(commercial, "fetch_all", fake_fetch_all)
+    monkeypatch.setattr(
+        commercial,
+        "_active_prescription",
+        lambda _encounter_id: {
+            "status": "issued",
+            "items": [{"medication_name": "신규약", "duration_days": 14}],
+        },
+    )
+
+    suggestions = _suggested_invoice_items("encounter-1")
+
+    assert suggestions == [
+        {
+            "item_code": "MED-UNPRICED",
+            "description": "신규약 약제비 (가격 확인 필요)",
+            "quantity": 1,
+            "unit_amount": 0,
+            "source_note": "발행 처방: 신규약 · 14일",
+            "pricing_missing": True,
+        }
+    ]
+
+
+def test_invoice_issue_rejects_an_unpriced_prescribed_medication(monkeypatch):
+    app = Flask(__name__)
+    app.register_blueprint(commercial.bp)
+    monkeypatch.setattr(
+        commercial,
+        "_encounter",
+        lambda _encounter_id: encounter(workflow_stage="checkout"),
+    )
+    monkeypatch.setattr(
+        commercial,
+        "_invoice",
+        lambda _encounter_id: {
+            "id": "invoice-1",
+            "status": "draft",
+            "total_amount": 30000,
+            "items": [{"item_code": "MED-UNPRICED", "unit_amount": 0}],
+        },
+    )
+
+    response = app.test_client().post("/api/encounters/encounter-1/invoice/issue")
+
+    assert response.status_code == 409
+    assert response.get_json()["error"] == "medication_price_required"
 
 
 def test_legacy_issued_prescription_does_not_unlock_checkout(monkeypatch):

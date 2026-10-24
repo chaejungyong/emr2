@@ -589,6 +589,115 @@ def get_soap(encounter_id):
     return jsonify(present_document(document))
 
 
+@bp.patch("/encounters/<encounter_id>/soap/<stage>/draft")
+def save_section_draft(encounter_id, stage):
+    if session.get("admin_id") and session.get("role") != "veterinarian":
+        return jsonify({"error": "permission_denied"}), 403
+    if encounter_is_closed(encounter_id):
+        return jsonify(
+            {
+                "error": "encounter_closed",
+                "message": "종료된 진료입니다. 진료를 다시 연 뒤 SOAP를 수정하세요.",
+            }
+        ), 409
+    stage = normalize_stage(stage)
+    if not stage:
+        return jsonify({"error": "invalid_soap_stage"}), 400
+    document = ensure_document(encounter_id)
+    if not document:
+        return jsonify({"error": "encounter_not_found"}), 404
+    sections = section_rows(document["id"])
+    if not stage_is_unlocked(stage, sections):
+        return jsonify({"error": "previous_stage_not_confirmed"}), 409
+
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return jsonify({"error": "json_body_required"}), 400
+    raw_content = payload.get("content")
+    content = "" if raw_content is None else str(raw_content)
+    if len(content) > 60000:
+        return jsonify({"error": "content_too_long"}), 400
+    diagnosis_name = None
+    if stage == "A":
+        raw_diagnosis = payload.get("diagnosis_name")
+        diagnosis_name = "" if raw_diagnosis is None else str(raw_diagnosis)
+        if len(diagnosis_name) > 255:
+            return jsonify(
+                {"error": "diagnosis_name_too_long", "message": "진단명은 255자 이내로 입력하세요."}
+            ), 400
+
+    section = sections[stage]
+    if section.get("draft_text") == content and (
+        stage != "A" or (section.get("draft_diagnosis_name") or "") == diagnosis_name
+    ):
+        return jsonify(
+            {
+                "stage": stage,
+                "draft_text": section.get("draft_text"),
+                "draft_diagnosis_name": section.get("draft_diagnosis_name"),
+                "draft_updated_at": section.get("draft_updated_at"),
+                "status": section["status"],
+                "workflow_invalidated": False,
+            }
+        )
+
+    saved_at = datetime.utcnow()
+    confirmed_content_changed = section["status"] == "confirmed" and (
+        content != (section.get("current_text") or "")
+        or (
+            stage == "A"
+            and diagnosis_name != (section.get("diagnosis_name") or "")
+        )
+    )
+    with transaction():
+        execute(
+            """
+            UPDATE soap_sections
+            SET draft_text = %s, draft_diagnosis_name = %s, draft_updated_at = %s,
+                status = CASE WHEN %s THEN 'stale' ELSE status END
+            WHERE id = %s
+            """,
+            (content, diagnosis_name, saved_at, confirmed_content_changed, section["id"]),
+        )
+        if confirmed_content_changed:
+            later = STAGES[STAGES.index(stage) + 1 :]
+            if later:
+                placeholders = ", ".join(["%s"] * len(later))
+                execute(
+                    f"""
+                    UPDATE soap_sections
+                    SET status = CASE WHEN current_text IS NULL THEN 'pending' ELSE 'stale' END
+                    WHERE soap_document_id = %s AND stage IN ({placeholders})
+                    """,
+                    [document["id"], *later],
+                )
+            execute(
+                "UPDATE soap_documents SET status = 'draft' WHERE id = %s",
+                (document["id"],),
+            )
+            execute(
+                "UPDATE encounters SET status = 'draft' WHERE id = %s",
+                (encounter_id,),
+            )
+            invalidate_workflow(encounter_id, "documentation")
+            audit(
+                "soap.draft_edit",
+                "soap_document",
+                document["id"],
+                {"stage": stage},
+            )
+    return jsonify(
+        {
+            "stage": stage,
+            "draft_text": content,
+            "draft_diagnosis_name": diagnosis_name,
+            "draft_updated_at": saved_at,
+            "status": "stale" if confirmed_content_changed else section["status"],
+            "workflow_invalidated": confirmed_content_changed,
+        }
+    )
+
+
 @bp.post("/encounters/<encounter_id>/soap/<stage>/candidates")
 def generate_candidates(encounter_id, stage):
     if session.get("admin_id") and session.get("role") != "veterinarian":
@@ -873,7 +982,8 @@ def confirm_section(encounter_id, stage):
             """
             UPDATE soap_sections
             SET status = 'confirmed', current_text = %s, diagnosis_name = %s,
-                confirmed_at = %s
+                confirmed_at = %s, draft_text = NULL,
+                draft_diagnosis_name = NULL, draft_updated_at = NULL
             WHERE id = %s
             """,
             (content, diagnosis_name, datetime.utcnow(), section["id"]),

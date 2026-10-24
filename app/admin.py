@@ -1,3 +1,5 @@
+from math import isfinite
+
 from flask import Blueprint, current_app, jsonify, request, session
 from werkzeug.security import generate_password_hash
 
@@ -8,6 +10,8 @@ from .indexing import IndexingError, preview_pdf, scan_pdfs, source_key
 
 
 bp = Blueprint("admin", __name__, url_prefix="/api/admin")
+
+BILLING_CATALOG_CODES = {"CONSULT", "ECHO", "ECG", "XRAY", "BP", "LAB"}
 
 
 def veterinarian_only():
@@ -28,6 +32,118 @@ def list_users():
             )
         }
     )
+
+
+@bp.get("/billing-catalog")
+@require_roles("veterinarian")
+def billing_catalog():
+    items = fetch_all(
+        "SELECT code,description,unit_amount,match_type,match_value,position_no,is_active FROM billing_catalog_items ORDER BY position_no,code"
+    )
+    for item in items:
+        item["unit_amount"] = float(item["unit_amount"])
+    return jsonify({"items": items})
+
+
+@bp.put("/billing-catalog")
+@require_roles("veterinarian")
+def update_billing_catalog():
+    payload = request.get_json(silent=True) or {}
+    raw_items = payload.get("items")
+    if not isinstance(raw_items, list) or {item.get("code") for item in raw_items} != BILLING_CATALOG_CODES:
+        return jsonify({"error": "validation_error", "message": "수가 항목 구성을 확인하세요."}), 400
+    cleaned = []
+    try:
+        for item in raw_items:
+            description = str(item.get("description") or "").strip()
+            amount = float(item.get("unit_amount"))
+            if not description or len(description) > 255 or not isfinite(amount) or amount < 0 or amount > 9999999999:
+                raise ValueError
+            cleaned.append((description, round(amount, 2), item.get("is_active") is True, item["code"]))
+    except (TypeError, ValueError):
+        return jsonify({"error": "validation_error", "message": "항목명과 금액을 확인하세요."}), 400
+    with transaction():
+        for description, amount, active, code in cleaned:
+            execute(
+                "UPDATE billing_catalog_items SET description=%s,unit_amount=%s,is_active=%s,updated_by=%s WHERE code=%s",
+                (description, amount, active, session.get("admin_id"), code),
+            )
+        audit("billing.catalog_update", "billing_catalog", None, {"codes": sorted(BILLING_CATALOG_CODES)})
+    return billing_catalog()
+
+
+@bp.get("/medication-billing-catalog")
+@require_roles("veterinarian")
+def medication_billing_catalog():
+    items = fetch_all(
+        "SELECT id,medication_name,billing_description,unit_amount,is_active FROM medication_billing_catalog ORDER BY medication_name"
+    )
+    known = {item["medication_name"].strip().casefold() for item in items}
+    historical = fetch_all(
+        "SELECT DISTINCT medication_name FROM prescription_items ORDER BY medication_name"
+    )
+    for row in historical:
+        name = row["medication_name"].strip()
+        if name.casefold() not in known:
+            items.append(
+                {
+                    "id": None,
+                    "medication_name": name,
+                    "billing_description": f"{name} 약제비",
+                    "unit_amount": 0,
+                    "is_active": False,
+                    "suggested": True,
+                }
+            )
+    for item in items:
+        item["unit_amount"] = float(item["unit_amount"])
+    return jsonify({"items": items})
+
+
+@bp.put("/medication-billing-catalog")
+@require_roles("veterinarian")
+def update_medication_billing_catalog():
+    payload = request.get_json(silent=True) or {}
+    raw_items = payload.get("items")
+    if not isinstance(raw_items, list):
+        return jsonify({"error": "validation_error", "message": "약품 가격표를 확인하세요."}), 400
+    cleaned = []
+    seen = set()
+    try:
+        for item in raw_items:
+            name = str(item.get("medication_name") or "").strip()
+            description = str(item.get("billing_description") or "").strip()
+            amount = float(item.get("unit_amount"))
+            normalized = name.casefold()
+            if (
+                not name
+                or not description
+                or len(name) > 255
+                or len(description) > 255
+                or normalized in seen
+                or not isfinite(amount)
+                or amount < 0
+                or amount > 9999999999
+            ):
+                raise ValueError
+            seen.add(normalized)
+            cleaned.append((name, description, round(amount, 2), item.get("is_active") is True))
+    except (TypeError, ValueError):
+        return jsonify({"error": "validation_error", "message": "약품명·청구명·금액의 중복 또는 입력값을 확인하세요."}), 400
+    with transaction():
+        for name, description, amount, active in cleaned:
+            execute(
+                """
+                INSERT INTO medication_billing_catalog
+                    (id,medication_name,billing_description,unit_amount,is_active,updated_by)
+                VALUES (%s,%s,%s,%s,%s,%s)
+                ON DUPLICATE KEY UPDATE billing_description=VALUES(billing_description),
+                    unit_amount=VALUES(unit_amount),is_active=VALUES(is_active),updated_by=VALUES(updated_by)
+                """,
+                (new_id(), name, description, amount, active, session.get("admin_id")),
+            )
+        audit("billing.medication_catalog_update", "medication_billing_catalog", None, {"item_count": len(cleaned)})
+    return medication_billing_catalog()
 
 
 @bp.post("/users")
